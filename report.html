@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexum IA - Rapport d'Entretien</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        :root {
+            --primary: #00f2ff;
+            --secondary: #7000ff;
+            --bg-dark: #050510;
+            --card-bg: rgba(20, 20, 40, 0.7);
+            --text-main: #ffffff;
+            --text-dim: #a0a0c0;
+            --success: #00ff88;
+            --warning: #ffcc00;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Inter', sans-serif; }
+
+        body {
+            background: var(--bg-dark);
+            color: var(--text-main);
+            min-height: 100vh;
+            background-image: radial-gradient(circle at 50% 50%, #101030 0%, #050510 100%);
+            padding: 40px 20px;
+        }
+
+        .container { max-width: 1000px; margin: 0 auto; }
+
+        header {
+            text-align: center;
+            margin-bottom: 50px;
+            animation: fadeIn 1s ease-out;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            background: linear-gradient(90deg, var(--primary), var(--secondary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 10px;
+        }
+
+        .glass-card {
+            background: var(--card-bg);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 24px;
+            padding: 40px;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+            margin-bottom: 30px;
+        }
+
+        .upload-section {
+            text-align: center;
+            border: 2px dashed rgba(255, 255, 255, 0.2);
+            padding: 40px;
+            border-radius: 20px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .upload-section:hover {
+            border-color: var(--primary);
+            background: rgba(0, 242, 255, 0.05);
+        }
+
+        .btn-main {
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            color: white;
+            border: none;
+            padding: 16px 32px;
+            border-radius: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .btn-main:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(0, 242, 255, 0.3);
+        }
+
+        .btn-main:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        #resultsSection { display: none; }
+
+        .analysis-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-top: 30px;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            text-align: center;
+            padding: 20px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.05);
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: 700;
+            color: var(--primary);
+            margin-bottom: 5px;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: var(--text-dim);
+            text-transform: uppercase;
+        }
+
+        /* Timeline Styles */
+        .timeline-container {
+            margin-top: 30px;
+            padding: 20px;
+            background: rgba(0,0,0,0.2);
+            border-radius: 16px;
+        }
+
+        .timeline-track {
+            height: 40px;
+            width: 100%;
+            background: rgba(255,255,255,0.05);
+            border-radius: 20px;
+            display: flex;
+            overflow: hidden;
+            position: relative;
+            margin-top: 10px;
+        }
+
+        .timeline-segment {
+            height: 100%;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+
+        .timeline-segment:hover {
+            transform: scaleY(1.2);
+            filter: brightness(1.2);
+        }
+
+        .transcript-box {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 20px;
+            border-radius: 12px;
+            margin-top: 20px;
+            font-size: 14px;
+            line-height: 1.6;
+            max-height: 400px;
+            overflow-y: auto;
+            border-left: 4px solid var(--secondary);
+        }
+
+        .transcript-chunk {
+            padding: 8px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .transcript-chunk:hover {
+            background: rgba(255,255,255,0.05);
+        }
+
+        .transcript-time {
+            font-weight: 700;
+            color: var(--primary);
+            margin-right: 10px;
+            font-size: 12px;
+        }
+
+        .inconsistency-card {
+            background: rgba(255, 80, 80, 0.1);
+            border: 1px solid rgba(255, 80, 80, 0.3);
+            padding: 15px;
+            border-radius: 12px;
+            margin-top: 20px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            color: #ff8080;
+        }
+
+        .loader {
+            display: none;
+            width: 48px;
+            height: 48px;
+            border: 5px solid #FFF;
+            border-bottom-color: var(--primary);
+            border-radius: 50%;
+            display: inline-block;
+            box-sizing: border-box;
+            animation: rotation 1s linear infinite;
+            margin: 20px auto;
+        }
+
+        @keyframes rotation { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+
+        #loadingOverlay {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            margin-top: 20px;
+        }
+
+        /* CHATBOT STYLES */
+        #chatbot-container {
+            position: fixed; bottom: 30px; right: 30px; z-index: 1000;
+        }
+        #chat-window {
+            width: 350px; height: 450px; background: var(--card-bg);
+            backdrop-filter: blur(20px); border: 1px solid var(--primary);
+            border-radius: 20px; display: none; flex-direction: column;
+            box-shadow: 0 10px 50px rgba(0,0,0,0.5); overflow: hidden;
+            margin-bottom: 15px;
+        }
+        #chat-header {
+            background: var(--primary); color: #000; padding: 15px;
+            font-weight: 700; display: flex; justify-content: space-between;
+        }
+        #chat-messages {
+            flex: 1; padding: 15px; overflow-y: auto; display: flex;
+            flex-direction: column; gap: 10px; font-size: 13px;
+        }
+        .msg { padding: 10px; border-radius: 12px; max-width: 80%; }
+        .msg.bot { background: rgba(255,255,255,0.1); align-self: flex-start; }
+        .msg.user { background: var(--secondary); align-self: flex-end; }
+        #chat-input-area {
+            padding: 10px; border-top: 1px solid rgba(255,255,255,0.1);
+            display: flex; gap: 5px;
+        }
+        #chat-input {
+            flex: 1; background: rgba(0,0,0,0.2); border: none;
+            padding: 10px; border-radius: 8px; color: white;
+        }
+        #chat-toggle {
+            width: 60px; height: 60px; border-radius: 30px;
+            background: var(--primary); border: none; cursor: pointer;
+            box-shadow: 0 5px 20px rgba(0, 242, 255, 0.4);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 24px; color: #000; float: right;
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>GENERATEUR DE RAPPORT D'ENTRETIEN</h1>
+            <p style="color: var(--text-dim);">Analyse approfondie Multimodale & Export PDF Professionnel</p>
+        </header>
+
+        <div class="glass-card" id="uploadCard">
+            <div class="upload-section" id="dropZone" onclick="document.getElementById('fileInput').click()">
+                <i class="fas fa-cloud-upload-alt" style="font-size: 3rem; color: var(--primary); margin-bottom: 15px;"></i>
+                <h3>Déposez la vidéo du candidat</h3>
+                <p style="color: var(--text-dim); margin-top: 10px;">Formats supportés: MP4, WEBM, MOV</p>
+                <input type="file" id="fileInput" hidden accept="video/*">
+            </div>
+            
+            <div style="margin-top: 20px; text-align: center;">
+                <input type="text" id="candidateName" placeholder="Nom du candidat..." 
+                       style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); padding: 12px; border-radius: 8px; color: white; width: 300px; margin-bottom: 10px;">
+                <br>
+                <button class="btn-main" id="analyzeBtn">
+                    <i class="fas fa-microchip"></i> LANCER L'ANALYSE IA
+                </button>
+            </div>
+
+            <div id="loadingOverlay">
+                <span class="loader"></span>
+                <p id="loadingStatus">Analyse multimodale en cours (Vision + Audio)...</p>
+            </div>
+        </div>
+
+        <div id="resultsSection" class="glass-card">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 30px;">
+                <div>
+                    <h2 id="resName" style="color: var(--primary);">CANDIDAT: -</h2>
+                    <p id="resDate" style="color: var(--text-dim); font-size: 14px;">Date de l'entretien: -</p>
+                </div>
+                <button class="btn-main" id="downloadPdfBtn" style="background: var(--success); margin: 0;">
+                    <i class="fas fa-file-pdf"></i> TELECHARGER LE RAPPORT
+                </button>
+            </div>
+
+            <div class="metrics-grid">
+                <!-- Video Review -->
+                <div class="glass-card" style="grid-column: 1 / -1; padding: 0; overflow: hidden; height: 400px; background: #000;">
+                    <video id="reportVideo" controls style="width: 100%; height: 100%; object-fit: contain;"></video>
+                </div>
+
+                <div class="stat-card">
+                    <div class="stat-value" id="sStress">0%</div>
+                    <div class="stat-label">Gestion du Stress</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="sComm">0%</div>
+                    <div class="stat-label">Communication</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="sExpr">0%</div>
+                    <div class="stat-label">Expressivité</div>
+                </div>
+                <div class="stat-card" style="border: 1px solid var(--primary);">
+                    <div class="stat-value" id="sConf">0%</div>
+                    <div class="stat-label">Assurance</div>
+                </div>
+            </div>
+
+            <!-- Section des KPIs de performance du modèle (Système) -->
+            <div id="systemKpiSection" style="margin-bottom: 30px; display: none;">
+                <h3 style="font-size: 14px; color: #ffcc00; text-transform: uppercase; margin-bottom: 15px;">
+                    <i class="fas fa-microchip"></i> Performance du Modèle (Système) pour cette Vidéo
+                </h3>
+                <div class="metrics-grid">
+                    <div class="stat-card" style="border: 1px solid rgba(255, 204, 0, 0.3);">
+                        <div class="stat-value" id="sysKpiRtf" style="color: #ffcc00;">--</div>
+                        <div class="stat-label">Facteur Temps Réel (RTF)</div>
+                    </div>
+                    <div class="stat-card" style="border: 1px solid rgba(255, 204, 0, 0.3);">
+                        <div class="stat-value" id="sysKpiFps" style="color: #ffcc00;">--</div>
+                        <div class="stat-label">Vitesse (FPS)</div>
+                    </div>
+                    <div class="stat-card" style="border: 1px solid rgba(255, 204, 0, 0.3);">
+                        <div class="stat-value" id="sysKpiLatency" style="color: #ffcc00;">--</div>
+                        <div class="stat-label">Latence d'Inférence</div>
+                    </div>
+                    <div class="stat-card" style="border: 1px solid rgba(255, 204, 0, 0.3);">
+                        <div class="stat-value" id="sysKpiConfidence" style="color: #ffcc00;">--</div>
+                        <div class="stat-label">Confiance Moyenne</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Courbes d'évolution des KPIs -->
+            <div class="timeline-container" style="margin-top: 0; margin-bottom: 30px; background: rgba(255,255,255,0.02);">
+                <h3 style="font-size: 14px; color: var(--primary); text-transform: uppercase; margin-bottom: 15px;">
+                    <i class="fas fa-chart-line"></i> Évolution Temporelle des KPIs Candidat
+                </h3>
+                <div style="height: 300px; width: 100%;">
+                    <canvas id="kpiHistoryChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Heatmap Timeline -->
+            <div class="timeline-container">
+                <h3 style="font-size: 14px; color: var(--text-dim); text-transform: uppercase;">
+                    <i class="fas fa-wave-square"></i> Timeline Émotionnelle Interactive
+                </h3>
+                <div class="timeline-track" id="emotionTimeline">
+                    <!-- Segments dynamic -->
+                </div>
+                <div style="display: flex; justify-content: space-between; font-size: 10px; color: var(--text-dim); margin-top: 5px;">
+                    <span>Début</span>
+                    <span id="videoDuration">0:00</span>
+                </div>
+            </div>
+
+            <div class="analysis-grid">
+                <!-- Soft Skills Radar -->
+                <div style="background: rgba(255,255,255,0.02); padding: 20px; border-radius: 20px;">
+                    <h3 style="color: var(--primary); margin-bottom: 20px; font-size: 16px;">PROFIL DES SOFT SKILLS</h3>
+                    <div style="height: 250px; display: flex; justify-content: center;">
+                        <canvas id="skillsChart"></canvas>
+                    </div>
+                </div>
+
+                    <!-- Verdict & Inconsistencies -->
+                    <div>
+                        <h3 style="color: var(--warning); margin-bottom: 15px; font-size: 16px;">VERDICT ANALYTIQUE</h3>
+                        <p id="resVerdict" style="line-height: 1.6; color: var(--text-dim); font-size: 14px;"></p>
+                        
+                        <div id="inconsistencyContainer">
+                            <!-- Alertes dynamic -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- AI FEEDBACK BOT SECTION -->
+                <div style="margin-top: 40px; border: 1px solid var(--primary); padding: 25px; border-radius: 20px; background: rgba(0, 242, 255, 0.03);">
+                    <h3 style="color: var(--primary); margin-bottom: 20px; display: flex; align-items: center; gap: 10px;">
+                        <i class="fas fa-robot"></i> NEXY AI FEEDBACK (POINTS DE VÉRIFICATION)
+                    </h3>
+                    <div id="aiFeedbackContainer" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px;">
+                        <!-- Feedback dynamic -->
+                    </div>
+                </div>
+
+            <div style="margin-top: 40px;">
+                <h3 style="color: var(--secondary); margin-bottom: 15px;">Transcription & Navigation</h3>
+                <div id="resTranscript" class="transcript-box"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- CHATBOT UI -->
+    <div id="chatbot-container">
+        <div id="chat-window">
+            <div id="chat-header">
+                <span>🤖 NEXY ASSISTANT RH</span>
+                <i class="fas fa-times" style="cursor:pointer" onclick="toggleChat()"></i>
+            </div>
+            <div id="chat-messages">
+                <div class="msg bot">Bonjour ! Je suis Nexy. Je connais parfaitement ce candidat. Posez-moi vos questions !</div>
+            </div>
+            <div id="chat-input-area">
+                <input type="text" id="chat-input" placeholder="Posez une question...">
+                <button onclick="sendMessage()" style="background:var(--primary); border:none; border-radius:5px; padding:5px 10px; cursor:pointer">
+                    <i class="fas fa-paper-plane"></i>
+                </button>
+            </div>
+        </div>
+        <button id="chat-toggle" onclick="toggleChat()">
+            <i class="fas fa-comment-dots"></i>
+        </button>
+    </div>
+
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const analyzeBtn = document.getElementById('analyzeBtn');
+        const resultsSection = document.getElementById('resultsSection');
+        const loader = document.getElementById('loadingOverlay');
+        let currentAnalysisData = null;
+        let skillsChart = null;
+        let kpiChart = null;
+
+        const emoColors = {
+            'happy': '#00ff88',
+            'neutral': '#00f2ff',
+            'sad': '#7000ff',
+            'angry': '#ff5050',
+            'fear': '#ffcc00',
+            'surprise': '#ff00ff',
+            'disgust': '#808000'
+        };
+
+        window.onload = () => {
+            const lastData = sessionStorage.getItem('lastAnalysis');
+            if (lastData) {
+                currentAnalysisData = JSON.parse(lastData);
+                displayResults(currentAnalysisData, "Candidat");
+                resultsSection.style.display = 'block';
+                // Clear after display to avoid re-loading on refresh
+                sessionStorage.removeItem('lastAnalysis');
+            }
+        };
+
+        analyzeBtn.onclick = async () => {
+            const file = fileInput.files[0];
+            const name = document.getElementById('candidateName').value;
+            if (!file) return alert("Veuillez choisir une vidéo.");
+
+            // Preview video in report
+            const reportVideo = document.getElementById('reportVideo');
+            reportVideo.src = URL.createObjectURL(file);
+
+            analyzeBtn.disabled = true;
+            loader.style.display = 'flex';
+            resultsSection.style.display = 'none';
+            
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const response = await fetch('/analyze_video', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                currentAnalysisData = data;
+                displayResults(data, name);
+                
+                analyzeBtn.disabled = false;
+                loader.style.display = 'none';
+                resultsSection.style.display = 'block';
+                resultsSection.scrollIntoView({ behavior: 'smooth' });
+            } catch (err) {
+                console.error(err);
+                alert("Erreur lors de l'analyse. Vérifiez la console.");
+                analyzeBtn.disabled = false;
+                loader.style.display = 'none';
+            }
+        };
+
+        function displayResults(data, name) {
+            if (!data) return;
+            document.getElementById('resName').innerText = "CANDIDAT: " + (name || "Anonyme");
+            document.getElementById('resDate').innerText = "Date de l'entretien: " + new Date().toLocaleDateString();
+            
+            const m = data.metrics || {};
+            // Stats
+            document.getElementById('sStress').innerText = (m.stress_management || 0).toFixed(1) + "%";
+            document.getElementById('sComm').innerText = (m.communication || 0).toFixed(1) + "%";
+            document.getElementById('sExpr').innerText = (m.expressivity || 0).toFixed(1) + "%";
+            document.getElementById('sConf').innerText = (m.assurance_level || 0).toFixed(1) + "%";
+            
+            // System KPIs
+            const sysKpiSec = document.getElementById('systemKpiSection');
+            if (data.system_kpis) {
+                sysKpiSec.style.display = 'block';
+                document.getElementById('sysKpiRtf').innerText = data.system_kpis.real_time_factor.toFixed(2) + 'x';
+                document.getElementById('sysKpiFps').innerText = data.system_kpis.fps.toFixed(1) + ' fps';
+                document.getElementById('sysKpiLatency').innerText = data.system_kpis.latency_ms.toFixed(0) + ' ms';
+                document.getElementById('sysKpiConfidence').innerText = data.system_kpis.avg_confidence.toFixed(1) + '%';
+            } else {
+                sysKpiSec.style.display = 'none';
+            }
+            
+            const analysis = data.analysis || { level: "N/A" };
+            document.getElementById('resVerdict').innerText = analysis.level;
+
+            // Timeline
+            const timelineEl = document.getElementById('emotionTimeline');
+            timelineEl.innerHTML = '';
+            data.timeline.forEach(step => {
+                const seg = document.createElement('div');
+                seg.className = 'timeline-segment';
+                seg.style.flex = '1';
+                seg.style.background = emoColors[step.emotion] || '#ccc';
+                seg.title = `${step.time}s: ${step.emotion} (${(step.confidence*100).toFixed(0)}%)`;
+                timelineEl.appendChild(seg);
+            });
+
+            // Radar Chart
+            initRadar(data.soft_skills);
+
+            // KPI Curves Chart
+            if (data.metrics_history && data.metrics_history.length > 0) {
+                initKpiChart(data.metrics_history);
+            }
+
+            // Inconsistencies
+            const incContainer = document.getElementById('inconsistencyContainer');
+            incContainer.innerHTML = '';
+            data.inconsistencies.forEach(inc => {
+                incContainer.innerHTML += `
+                    <div class="inconsistency-card">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        <span>${inc}</span>
+                    </div>
+                `;
+            });
+
+            // Transcript
+            const transBox = document.getElementById('resTranscript');
+            transBox.innerHTML = '';
+            if (data.transcript_chunks && data.transcript_chunks.length > 0) {
+                data.transcript_chunks.forEach(chunk => {
+                    const div = document.createElement('div');
+                    div.className = 'transcript-chunk';
+                    div.innerHTML = `<span class="transcript-time" onclick="jumpTo(${chunk.timestamp[0]})">[${chunk.timestamp[0].toFixed(1)}s]</span> ${chunk.text}`;
+                    transBox.appendChild(div);
+                });
+            } else {
+                transBox.innerText = data.transcript || "Aucune parole détectée.";
+            }
+
+            // AI Feedback
+            const aiContainer = document.getElementById('aiFeedbackContainer');
+            aiContainer.innerHTML = '';
+            if (data.ai_feedback) {
+                data.ai_feedback.forEach(point => {
+                    const card = document.createElement('div');
+                    card.style.background = 'rgba(255,255,255,0.05)';
+                    card.style.padding = '15px';
+                    card.style.borderRadius = '12px';
+                    card.style.borderLeft = '4px solid var(--primary)';
+                    card.innerHTML = `
+                        <div style="font-weight: 700; color: var(--primary); margin-bottom: 5px;">${point.reason}</div>
+                        <div style="font-size: 13px; color: var(--text-dim); margin-bottom: 10px;">${point.feedback}</div>
+                        <button onclick="jumpTo(${point.timestamp})" style="background: var(--primary); color: #000; border: none; padding: 5px 10px; border-radius: 4px; font-size: 11px; font-weight: 700; cursor: pointer;">
+                            VÉRIFIER À ${point.timestamp}s
+                        </button>
+                    `;
+                    aiContainer.appendChild(card);
+                });
+            }
+        }
+
+        function jumpTo(time) {
+            const video = document.getElementById('reportVideo');
+            video.currentTime = time;
+            video.play();
+        }
+
+        function initKpiChart(history) {
+            if (kpiChart) kpiChart.destroy();
+            const ctx = document.getElementById('kpiHistoryChart').getContext('2d');
+            
+            const labels = history.map(h => h.time.toFixed(0) + 's');
+            
+            kpiChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { label: 'Stress', data: history.map(h => h.stress), borderColor: '#ff4466', tension: 0.4, borderWidth: 2 },
+                        { label: 'Communication', data: history.map(h => h.comm), borderColor: '#00f2ff', tension: 0.4, borderWidth: 2 },
+                        { label: 'Expressivité', data: history.map(h => h.expr), borderColor: '#ff00c8', tension: 0.4, borderWidth: 2 },
+                        { label: 'Assurance', data: history.map(h => h.conf), borderColor: '#00ff88', tension: 0.4, borderWidth: 2 },
+                        { label: 'Confiance Modèle (%)', data: history.map(h => h.model_conf || 0), borderColor: '#ffcc00', borderDash: [5, 5], tension: 0.4, borderWidth: 2 }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { labels: { color: '#a0a0c0' } } },
+                    scales: {
+                        y: { min: 0, max: 100, grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#a0a0c0' } },
+                        x: { grid: { display: false }, ticks: { color: '#a0a0c0', maxTicksLimit: 15 } }
+                    }
+                }
+            });
+        }
+
+        function initRadar(skills) {
+            if (!skills) return;
+            if (skillsChart) skillsChart.destroy();
+            
+            const ctx = document.getElementById('skillsChart').getContext('2d');
+            const labels = Object.keys(skills);
+            const values = Object.values(skills);
+
+            skillsChart = new Chart(ctx, {
+                type: 'radar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Compétences Détectées',
+                        data: values,
+                        backgroundColor: 'rgba(0, 242, 255, 0.2)',
+                        borderColor: '#00f2ff',
+                        pointBackgroundColor: '#00f2ff',
+                        borderWidth: 2
+                    }]
+                },
+                options: {
+                    scales: {
+                        r: {
+                            beginAtZero: true,
+                            max: 100,
+                            grid: { color: 'rgba(255,255,255,0.1)' },
+                            angleLines: { color: 'rgba(255,255,255,0.1)' },
+                            pointLabels: { color: '#a0a0c0', font: { size: 10 } }
+                        }
+                    },
+                    plugins: { legend: { display: false } }
+                }
+            });
+        }
+
+        // CHATBOT LOGIC
+        function toggleChat() {
+            const win = document.getElementById('chat-window');
+            win.style.display = (win.style.display === 'flex') ? 'none' : 'flex';
+        }
+
+        async function sendMessage() {
+            const input = document.getElementById('chat-input');
+            const text = input.value.trim();
+            if (!text) return;
+
+            addChatMessage(text, 'user');
+            input.value = '';
+
+            try {
+                const res = await fetch('/chatbot', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        query: text,
+                        context: currentAnalysisData
+                    })
+                });
+                const data = await res.json();
+                addChatMessage(data.response, 'bot');
+            } catch (err) {
+                addChatMessage("Désolé, je rencontre une erreur technique.", 'bot');
+            }
+        }
+
+        function addChatMessage(text, side) {
+            const container = document.getElementById('chat-messages');
+            const div = document.createElement('div');
+            div.className = `msg ${side}`;
+            div.innerText = text;
+            container.appendChild(div);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        document.getElementById('chat-input').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+
+        document.getElementById('downloadPdfBtn').onclick = async () => {
+            const btn = document.getElementById('downloadPdfBtn');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> GÉNÉRATION...';
+            btn.disabled = true;
+
+            try {
+                const name = document.getElementById('candidateName').value;
+                const pdfData = {
+                    candidate_name: name || "Anonyme",
+                    metrics: currentAnalysisData.metrics,
+                    verdict: currentAnalysisData.analysis.level,
+                    transcript: currentAnalysisData.transcript,
+                    transcript_chunks: currentAnalysisData.transcript_chunks
+                };
+
+                const response = await fetch('/export_pdf', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(pdfData)
+                });
+
+                if (!response.ok) throw new Error("Erreur serveur lors de la génération du PDF");
+
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = "Rapport_Nexum_" + (name || "Candidat") + ".pdf";
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+            } catch (err) {
+                alert("Impossible de générer le PDF : " + err.message);
+            } finally {
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+        };
+    </script>
+</body>
+</html>

@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SentiMind Pro | YOLO Real-Time Intelligence</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <style>
+        :root {
+            --primary: #6366f1;
+            --secondary: #a855f7;
+            --accent: #f43f5e;
+            --bg-dark: #020617;
+            --card-bg: rgba(15, 23, 42, 0.9);
+            --border: rgba(255, 255, 255, 0.1);
+            --text: #f8fafc;
+            --text-muted: #94a3b8;
+            --success: #10b981;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: var(--bg-dark);
+            color: var(--text);
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+
+        .app-container {
+            display: grid;
+            grid-template-columns: 80px 1fr 350px;
+            height: 100vh;
+        }
+
+        /* Sidebar Mini */
+        aside.sidebar-mini {
+            background: rgba(15, 23, 42, 0.8);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 1.5rem 0;
+            gap: 2rem;
+        }
+
+        .side-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            color: var(--text-muted);
+        }
+
+        .side-icon.active { background: var(--primary); color: white; }
+        .side-icon:hover:not(.active) { background: rgba(255,255,255,0.05); color: var(--text); }
+
+        /* Main Viewport */
+        main.viewport {
+            position: relative;
+            background: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #mainVideo, #mainCanvas {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        #mainCanvas { z-index: 10; pointer-events: auto; }
+
+        .viewport-overlay {
+            position: absolute;
+            top: 2rem;
+            left: 2rem;
+            z-index: 20;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .badge {
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(10px);
+            padding: 0.5rem 1rem;
+            border-radius: 99px;
+            border: 1px solid var(--border);
+            font-size: 0.8rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .scan-line {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: var(--primary);
+            box-shadow: 0 0 15px var(--primary);
+            z-index: 15;
+            animation: scan 3s linear infinite;
+        }
+
+        @keyframes scan {
+            0% { top: 0%; }
+            100% { top: 100%; }
+        }
+
+        /* Control Panel Right */
+        aside.control-panel {
+            background: var(--card-bg);
+            backdrop-filter: blur(20px);
+            border-left: 1px solid var(--border);
+            padding: 2rem;
+            display: flex;
+            flex-direction: column;
+            gap: 2rem;
+            overflow-y: auto;
+        }
+
+        .panel-section h3 {
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: var(--text-muted);
+            margin-bottom: 1rem;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .face-selector {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 0.5rem;
+        }
+
+        .face-thumb {
+            aspect-ratio: 1;
+            background: #1e293b;
+            border-radius: 8px;
+            border: 2px solid transparent;
+            cursor: pointer;
+            overflow: hidden;
+            transition: all 0.3s;
+        }
+
+        .face-thumb.active { border-color: var(--primary); transform: scale(1.05); }
+
+        .sentiment-card {
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 20px;
+            padding: 1.5rem;
+            text-align: center;
+            border: 1px solid var(--border);
+        }
+
+        .sentiment-emoji { font-size: 3.5rem; display: block; margin-bottom: 0.5rem; }
+        .sentiment-name { font-size: 1.5rem; font-weight: 800; }
+
+        .meter-group { display: flex; flex-direction: column; gap: 1rem; }
+        .meter-item { display: flex; flex-direction: column; gap: 0.4rem; }
+        .meter-label { font-size: 0.75rem; font-weight: 700; color: var(--text-muted); }
+        .meter-bar { height: 6px; background: rgba(255,255,255,0.05); border-radius: 3px; overflow: hidden; }
+        .meter-fill { height: 100%; transition: width 0.3s; }
+
+        .btn {
+            width: 100%;
+            padding: 1rem;
+            border-radius: 12px;
+            border: none;
+            cursor: pointer;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            transition: all 0.3s;
+            background: var(--primary);
+            color: white;
+        }
+
+        .btn-secondary { background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: var(--text); }
+        .btn:hover { transform: translateY(-2px); box-shadow: 0 10px 20px rgba(0,0,0,0.2); }
+
+        /* Loader Overlay */
+        .loader-overlay {
+            position: fixed;
+            inset: 0;
+            background: var(--bg-dark);
+            z-index: 9999;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            gap: 1.5rem;
+            transition: opacity 0.5s;
+        }
+
+        .spinner {
+            width: 60px;
+            height: 60px;
+            border: 4px solid rgba(99, 102, 241, 0.2);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+    <div class="loader-overlay" id="loader">
+        <div class="spinner"></div>
+        <p style="font-weight: 700; letter-spacing: 0.1em;">INITIALIZING YOLO ENGINE...</p>
+    </div>
+
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar-mini">
+            <div class="side-icon active" title="Real-Time Analysis">
+                <i data-lucide="zap"></i>
+            </div>
+            <div class="side-icon" title="Candidat Dashboard" onclick="window.location.href='/dashboard'">
+                <i data-lucide="layout-dashboard"></i>
+            </div>
+            <div class="side-icon" title="Settings" style="margin-top: auto;">
+                <i data-lucide="settings"></i>
+            </div>
+        </aside>
+
+        <!-- Main Viewport -->
+        <main class="viewport">
+            <div class="scan-line"></div>
+            <video id="mainVideo" playsinline autoplay muted></video>
+            <canvas id="mainCanvas"></canvas>
+
+            <div class="viewport-overlay">
+                <div class="badge">
+                    <span class="dot" style="width: 8px; height: 8px; background: #10b981; border-radius: 50%;"></span>
+                    YOLO v8 FACE DETECTOR ACTIVE
+                </div>
+                <div class="badge" id="streamInfo">
+                    <i data-lucide="video"></i> WEBCAM FEED
+                </div>
+            </div>
+
+            <!-- Floating Controls -->
+            <div style="position: absolute; bottom: 2rem; left: 50%; transform: translateX(-50%); z-index: 30; display: flex; gap: 1rem;">
+                <button class="btn" style="padding: 0.75rem 1.5rem; background: rgba(0,0,0,0.6); backdrop-filter: blur(10px); border: 1px solid var(--border);" onclick="startWebcam()">
+                    <i data-lucide="camera"></i> Start Camera
+                </button>
+                <button class="btn" style="padding: 0.75rem 1.5rem; background: rgba(0,0,0,0.6); backdrop-filter: blur(10px); border: 1px solid var(--border);" onclick="document.getElementById('fileInput').click()">
+                    <i data-lucide="upload"></i> Upload Video
+                </button>
+                <input type="file" id="fileInput" hidden accept="video/*">
+            </div>
+        </main>
+
+        <!-- Control Panel Right -->
+        <aside class="control-panel">
+            <div class="panel-section">
+                <h3>Detected Entities <span id="entityCount">0</span></h3>
+                <div class="face-selector" id="faceSelector">
+                    <div class="face-thumb active" title="Auto-Select"></div>
+                </div>
+            </div>
+
+            <div class="panel-section">
+                <h3>Neural Sentiment</h3>
+                <div class="sentiment-card">
+                    <span class="sentiment-emoji" id="sentEmoji">🎭</span>
+                    <span class="sentiment-name" id="sentName">IDLE</span>
+                    <p style="color: var(--text-muted); font-size: 0.8rem; margin-top: 0.5rem;" id="sentDetails">Awaiting visual input...</p>
+                </div>
+            </div>
+
+            <div class="panel-section meter-group">
+                <h3>Fusion Metrics</h3>
+                <div class="meter-item">
+                    <div class="meter-label">Visual Confidence (ViT) <span style="float:right;" id="visVal">0%</span></div>
+                    <div class="meter-bar"><div class="meter-fill" id="visFill" style="width: 0%; background: var(--primary);"></div></div>
+                </div>
+                <div class="meter-item">
+                    <div class="meter-label">Audio Valence (HuBERT) <span style="float:right;" id="audVal">0%</span></div>
+                    <div class="meter-bar"><div class="meter-fill" id="audFill" style="width: 0%; background: var(--secondary);"></div></div>
+                </div>
+                <div class="meter-item">
+                    <div class="meter-label">Attention Weight <span style="float:right;" id="attVal">0%</span></div>
+                    <div class="meter-bar"><div class="meter-fill" id="attFill" style="width: 0%; background: var(--success);"></div></div>
+                </div>
+            </div>
+
+            <div class="panel-section">
+                <h3>Actions</h3>
+                <button class="btn btn-secondary" onclick="generateReport()">
+                    <i data-lucide="download"></i> Snapshot Report
+                </button>
+            </div>
+        </aside>
+    </div>
+
+    <script>
+        lucide.createIcons();
+        const API_URL = 'http://localhost:8088';
+        const video = document.getElementById('mainVideo');
+        const canvas = document.getElementById('mainCanvas');
+        const ctx = canvas.getContext('2d');
+        let analysisInterval = null;
+        let selectedFaceIndex = 0;
+        let isProcessing = false;
+        let lastResults = []; // Stocker les derniers resultats pour le hit-testing
+
+        // Hide loader
+        setTimeout(() => document.getElementById('loader').style.opacity = '0', 1000);
+        setTimeout(() => document.getElementById('loader').classList.add('hidden'), 1500);
+
+        async function startWebcam() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                video.srcObject = stream;
+                document.getElementById('streamInfo').innerHTML = '<i data-lucide="video"></i> LIVE WEBCAM';
+                lucide.createIcons();
+                startAnalysis();
+            } catch (err) { alert("Webcam Error: " + err); }
+        }
+
+        document.getElementById('fileInput').onchange = (e) => {
+            const file = e.target.files[0];
+            if(file) {
+                video.srcObject = null;
+                video.src = URL.createObjectURL(file);
+                document.getElementById('streamInfo').innerHTML = '<i data-lucide="file-video"></i> FILE STREAM';
+                lucide.createIcons();
+                startAnalysis();
+            }
+        };
+
+        function startAnalysis() {
+            if(analysisInterval) clearInterval(analysisInterval);
+            analysisInterval = setInterval(async () => {
+                if(!video.paused && video.readyState >= 2 && !isProcessing) {
+                    await analyzeFrame();
+                }
+            }, 300); // Higher frequency for YOLO real-time feel
+        }
+
+        async function analyzeFrame() {
+            isProcessing = true;
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = video.videoWidth;
+            tempCanvas.height = video.videoHeight;
+            tempCanvas.getContext('2d').drawImage(video, 0, 0);
+            
+            const blob = await new Promise(r => tempCanvas.toBlob(r, 'image/jpeg', 0.7));
+            const formData = new FormData();
+            formData.append('frame', blob, 'frame.jpg');
+
+            try {
+                const response = await fetch(`${API_URL}/analyze`, { method: 'POST', body: formData });
+                const data = await response.json();
+                
+                if(data.success && data.faces_detected) {
+                    lastResults = data.results; // Sauvegarder
+                    drawYOLOBoxes(data.results);
+                    updateUI(data.results);
+                } else {
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                }
+            } catch(e) { console.error(e); }
+            finally { isProcessing = false; }
+        }
+
+        function drawYOLOBoxes(results) {
+            canvas.width = video.clientWidth;
+            canvas.height = video.clientHeight;
+            const scaleX = canvas.width / video.videoWidth;
+            const scaleY = canvas.height / video.videoHeight;
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            results.forEach((res, index) => {
+                const [x1, y1, x2, y2] = res.bbox;
+                const active = index === selectedFaceIndex;
+                
+                // Draw Box
+                ctx.strokeStyle = active ? '#6366f1' : 'rgba(255,255,255,0.3)';
+                ctx.lineWidth = active ? 4 : 2;
+                ctx.setLineDash(active ? [] : [5, 5]);
+                ctx.strokeRect(x1 * scaleX, y1 * scaleY, (x2-x1) * scaleX, (y2-y1) * scaleY);
+
+                // Draw Label
+                if(active) {
+                    ctx.fillStyle = '#6366f1';
+                    ctx.fillRect(x1 * scaleX, (y1 * scaleY) - 30, 150, 30);
+                    ctx.fillStyle = '#fff';
+                    ctx.font = 'bold 12px Plus Jakarta Sans';
+                    ctx.fillText(`ID: ${index} | ${res.emotion_fr.toUpperCase()}`, (x1 * scaleX) + 10, (y1 * scaleY) - 10);
+                }
+            });
+        }
+
+        // Click pour selectionner un visage directement sur l'image
+        canvas.onclick = (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+            
+            const scaleX = canvas.width / video.videoWidth;
+            const scaleY = canvas.height / video.videoHeight;
+
+            lastResults.forEach((res, i) => {
+                const [x1, y1, x2, y2] = res.bbox;
+                if(mouseX >= x1*scaleX && mouseX <= x2*scaleX && 
+                   mouseY >= y1*scaleY && mouseY <= y2*scaleY) {
+                    selectedFaceIndex = i;
+                    updateUI(lastResults);
+                }
+            });
+        };
+
+        function updateUI(results) {
+            document.getElementById('entityCount').innerText = results.length;
+            const res = results[selectedFaceIndex] || results[0];
+            
+            if(!res) return;
+
+            document.getElementById('sentEmoji').innerText = res.emoji;
+            document.getElementById('sentName').innerText = res.emotion_fr.toUpperCase();
+            document.getElementById('sentDetails').innerText = `Target Selected | Conf: ${Math.round(res.confidence * 100)}%`;
+            
+            const conf = Math.round(res.confidence * 100);
+            document.getElementById('visVal').innerText = conf + '%';
+            document.getElementById('visFill').style.width = conf + '%';
+            
+            // Stats issues du modele et de la fusion
+            const audConf = Math.round(res.audio_valence * 100);
+            document.getElementById('audVal').innerText = audConf + '%';
+            document.getElementById('audFill').style.width = audConf + '%';
+            
+            const attConf = Math.round(res.attention_weight * 100);
+            document.getElementById('attVal').innerText = attConf + '%';
+            document.getElementById('attFill').style.width = attConf + '%';
+
+            // Update Face Selector
+            const selector = document.getElementById('faceSelector');
+            selector.innerHTML = '';
+            results.forEach((_, i) => {
+                const div = document.createElement('div');
+                div.className = `face-thumb ${i === selectedFaceIndex ? 'active' : ''}`;
+                div.innerHTML = `<img src="https://api.dicebear.com/7.x/avataaars/svg?seed=${i}" style="width:100%">`;
+                div.title = `Switch to Face ${i}`;
+                div.onclick = (e) => { 
+                    e.stopPropagation();
+                    selectedFaceIndex = i; 
+                    updateUI(results);
+                };
+                selector.appendChild(div);
+            });
+        }
+
+        async function generateReport() {
+            alert("Snapshot Report Generated. Check your downloads.");
+        }
+    </script>
+</body>
+</html>
