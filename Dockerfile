@@ -1,14 +1,14 @@
 FROM python:3.13-slim
-
 WORKDIR /app
 
+# Install system libraries OpenCV needs
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
+    libglib2.0-0 \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
-
-# Add --no-cache-dir and a comment to bust cache
-RUN pip install --no-cache-dir -r requirements.txt \
-    && pip uninstall -y opencv-python opencv-contrib-python || true \
-    && pip install --no-cache-dir opencv-python-headless
-
+RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
