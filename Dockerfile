@@ -4,6 +4,7 @@ WORKDIR /app
 
 COPY requirements.txt .
 
+# Add --no-cache-dir and a comment to bust cache
 RUN pip install --no-cache-dir -r requirements.txt \
     && pip uninstall -y opencv-python opencv-contrib-python || true \
     && pip install --no-cache-dir opencv-python-headless
