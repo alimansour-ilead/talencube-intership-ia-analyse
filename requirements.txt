@@ -17,4 +17,5 @@ fpdf2
 pillow
 imageio
 imageio-ffmpeg
+opencv-python
 onnxruntime
