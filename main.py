@@ -25,8 +25,8 @@ from collections import deque
 import pickle
 from pathlib import Path
 
-import moviepy as mp
-from moviepy import VideoFileClip, AudioFileClip
+import moviepy.editor as mp
+from moviepy.editor import VideoFileClip, AudioFileClip
 import librosa
 import soundfile as sf
 from models.hubert_model import SpeechEmotionHuBERT
