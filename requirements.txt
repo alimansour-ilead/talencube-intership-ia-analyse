@@ -12,10 +12,10 @@ pydantic
 python-multipart
 librosa
 soundfile
-moviepy
+moviepy==1.0.3
 fpdf2
 pillow
-imageio
-imageio-ffmpeg
+imageio==2.34.1
+imageio-ffmpeg==0.5.1
 opencv-python
 onnxruntime
