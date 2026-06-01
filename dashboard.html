@@ -268,9 +268,219 @@
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
+        @keyframes modalIn {
+            from { opacity: 0; transform: scale(0.92) translateY(20px); }
+            to   { opacity: 1; transform: scale(1) translateY(0); }
+        }
+
+        /* ── Modal de Sélection du Candidat ── */
+        #candidateModal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 9999;
+            background: rgba(5, 8, 22, 0.85);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            align-items: center;
+            justify-content: center;
+        }
+        #candidateModal.open {
+            display: flex;
+        }
+        .modal-box {
+            background: linear-gradient(135deg, rgba(15,23,42,0.98) 0%, rgba(22,33,62,0.98) 100%);
+            border: 1px solid rgba(0, 242, 255, 0.25);
+            border-radius: 24px;
+            padding: 36px 40px;
+            width: min(640px, 94vw);
+            max-height: 90vh;
+            overflow-y: auto;
+            animation: modalIn 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+            box-shadow: 0 30px 80px rgba(0,0,0,0.6), 0 0 60px rgba(0,242,255,0.07);
+        }
+        .modal-title {
+            font-size: 20px;
+            font-weight: 700;
+            color: var(--primary);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 6px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .modal-subtitle {
+            font-size: 13px;
+            color: var(--text-dim);
+            margin-bottom: 28px;
+        }
+        #modalCandidateGrid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 16px;
+            margin-bottom: 28px;
+        }
+        .modal-candidate-card {
+            background: rgba(255,255,255,0.03);
+            border: 2px solid rgba(255,255,255,0.08);
+            border-radius: 18px;
+            padding: 24px 16px 18px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+        .modal-candidate-card:hover {
+            background: rgba(0,242,255,0.05);
+            border-color: rgba(0,242,255,0.4);
+            transform: translateY(-4px);
+            box-shadow: 0 12px 30px rgba(0,242,255,0.12);
+        }
+        .modal-candidate-card.selected {
+            background: rgba(0,242,255,0.08);
+            border-color: var(--primary);
+            box-shadow: 0 0 25px rgba(0,242,255,0.3), inset 0 0 20px rgba(0,242,255,0.03);
+        }
+        .modal-candidate-card img {
+            width: 90px;
+            height: 90px;
+            object-fit: cover;
+            border-radius: 50%;
+            border: 3px solid rgba(255,255,255,0.12);
+            transition: border-color 0.3s, box-shadow 0.3s;
+        }
+        .modal-candidate-card.selected img {
+            border-color: var(--primary);
+            box-shadow: 0 0 16px rgba(0,242,255,0.4);
+        }
+        .modal-candidate-card .cand-name {
+            font-size: 14px;
+            font-weight: 700;
+            color: #fff;
+        }
+        .modal-candidate-card .cand-pos {
+            font-size: 11px;
+            color: var(--text-dim);
+        }
+        .modal-candidate-card .check-badge {
+            display: none;
+            width: 24px;
+            height: 24px;
+            background: var(--primary);
+            border-radius: 50%;
+            align-items: center;
+            justify-content: center;
+            font-size: 13px;
+            color: #000;
+            font-weight: 900;
+        }
+        .modal-candidate-card.selected .check-badge {
+            display: flex;
+        }
+        .modal-actions {
+            display: flex;
+            gap: 12px;
+            justify-content: flex-end;
+        }
+        .btn-modal-cancel {
+            background: rgba(255,255,255,0.06);
+            border: 1px solid rgba(255,255,255,0.1);
+            color: var(--text-dim);
+            padding: 12px 24px;
+            border-radius: 10px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-modal-cancel:hover { background: rgba(255,255,255,0.1); color: #fff; }
+        .btn-modal-confirm {
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            border: none;
+            color: #000;
+            padding: 12px 28px;
+            border-radius: 10px;
+            font-size: 13px;
+            font-weight: 800;
+            cursor: pointer;
+            transition: all 0.2s;
+            letter-spacing: 0.5px;
+        }
+        .btn-modal-confirm:hover { transform: scale(1.03); box-shadow: 0 6px 20px rgba(0,242,255,0.3); }
+        .btn-modal-confirm:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+        #modalLoader {
+            text-align: center;
+            padding: 40px 0;
+        }
+        #modalLoader .spin-ring {
+            display: inline-block;
+            width: 44px;
+            height: 44px;
+            border: 3px solid rgba(0,242,255,0.15);
+            border-radius: 50%;
+            border-top-color: var(--primary);
+            animation: spin 0.9s linear infinite;
+        }
+        #modalLoader p {
+            margin-top: 16px;
+            color: var(--primary);
+            font-size: 13px;
+            font-weight: 600;
+        }
+        /* petit badge dans la sidebar montrant le candidat choisi */
+        #selectedCandidateBadge {
+            display: none;
+            align-items: center;
+            gap: 10px;
+            background: rgba(0,242,255,0.06);
+            border: 1px solid rgba(0,242,255,0.25);
+            border-radius: 12px;
+            padding: 10px 14px;
+            margin-top: 12px;
+        }
+        #selectedCandidateBadge img {
+            width: 40px; height: 40px;
+            border-radius: 50%;
+            object-fit: cover;
+            border: 2px solid var(--primary);
+        }
+        #selectedCandidateBadge .badge-info { flex: 1; }
+        #selectedCandidateBadge .badge-name { font-size: 13px; font-weight: 700; color: #fff; }
+        #selectedCandidateBadge .badge-pos  { font-size: 11px; color: var(--text-dim); }
     </style>
 </head>
 <body>
+    <!-- ═══════════════════════════════════════════ -->
+    <!-- MODAL DE SÉLECTION DU CANDIDAT              -->
+    <!-- ═══════════════════════════════════════════ -->
+    <div id="candidateModal">
+        <div class="modal-box">
+            <div class="modal-title"><i class="fas fa-user-check"></i> Choisir le Candidat à Analyser</div>
+            <p class="modal-subtitle">Cliquez sur un visage pour le sélectionner. L'analyse sera verrouillée uniquement sur ce candidat.</p>
+
+            <!-- Loader -->
+            <div id="modalLoader">
+                <div class="spin-ring"></div>
+                <p>Extraction des candidats en cours (max 10s)...</p>
+            </div>
+
+            <!-- Grille des cartes -->
+            <div id="modalCandidateGrid" style="display:none;"></div>
+
+            <!-- Message erreur/vide -->
+            <div id="modalMessage" style="display:none; text-align:center; padding: 30px 0; color: var(--text-dim); font-size:14px;"></div>
+
+            <div class="modal-actions">
+                <button class="btn-modal-cancel" onclick="closeCandidateModal()">Annuler</button>
+                <button class="btn-modal-confirm" id="btnConfirmCandidate" disabled onclick="confirmCandidateSelection()">✔ Confirmer la Sélection</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Animated Mesh Background -->
     <div class="bg-mesh">
         <div class="mesh-blob" style="background: var(--secondary); top: 0; left: 0;"></div>
@@ -320,6 +530,16 @@
                     </div>
                 </div>
                 <input type="file" id="fileInput" accept="video/*">
+
+                <!-- Badge candidat sélectionné -->
+                <div id="selectedCandidateBadge">
+                    <img id="badgeFaceImg" src="" alt="face">
+                    <div class="badge-info">
+                        <div class="badge-name" id="badgeName">—</div>
+                        <div class="badge-pos" id="badgePos">—</div>
+                    </div>
+                    <i class="fas fa-check-circle" style="color: var(--primary); font-size:18px;"></i>
+                </div>
                 
                 <div style="margin-top: 20px; text-align: center;">
                     <div class="emotion-badge" id="emoEmoji">🎭</div>
@@ -337,7 +557,9 @@
                     </div>
                 </div>
 
-                <div style="display: flex; gap: 10px; margin-top: 20px;">
+                <button class="btn-main" id="chooseCandidatesBtn" style="background: linear-gradient(135deg, var(--primary), var(--secondary)); margin-top: 14px;" onclick="openCandidateModal()">🔍 Choisir Candidat</button>
+
+                <div style="display: flex; gap: 10px; margin-top: 10px;">
                     <button class="btn-main" id="startBtn">DÉMARRER</button>
                     <button class="btn-main" style="background: var(--success);" id="analyzeFullBtn">ANALYSE COMPLÈTE (AVEC SPEECH)</button>
                 </div>
@@ -731,8 +953,110 @@
                 canvas.width = video.videoWidth;
                 canvas.height = video.videoHeight;
             };
-            addLog("Vidéo chargée avec succès. Cliquez sur un visage pour le suivre.");
+            addLog("Vidéo chargée ✅ — Cliquez sur 🔍 Choisir Candidat pour sélectionner le candidat à analyser.");
             resetSystemTracking();
+            // La sélection du candidat est déclenchée MANUELLEMENT via le bouton "Choisir Candidat"
+        }
+
+        // ─── Variables globales pour la modal ───
+        let modalSelectedCandidate = null;   // {face_image, center_x, center_y, name, position}
+
+        function openCandidateModal() {
+            if (!currentFile) {
+                alert("Veuillez d'abord charger une vidéo.");
+                return;
+            }
+            // Réinitialiser l'état de la modal
+            modalSelectedCandidate = null;
+            document.getElementById('modalLoader').style.display = 'block';
+            document.getElementById('modalCandidateGrid').style.display = 'none';
+            document.getElementById('modalMessage').style.display = 'none';
+            document.getElementById('btnConfirmCandidate').disabled = true;
+            document.getElementById('modalCandidateGrid').innerHTML = '';
+
+            document.getElementById('candidateModal').classList.add('open');
+            fetchCandidatesForModal(currentFile);
+        }
+
+        function closeCandidateModal() {
+            document.getElementById('candidateModal').classList.remove('open');
+        }
+
+        // Fermer la modal en cliquant sur l'arrière-plan
+        document.getElementById('candidateModal').addEventListener('click', function(e) {
+            if (e.target === this) closeCandidateModal();
+        });
+
+        async function fetchCandidatesForModal(file) {
+            const formData = new FormData();
+            formData.append('file', file);
+            try {
+                const res = await fetch('/extract_candidates_preview', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await res.json();
+
+                document.getElementById('modalLoader').style.display = 'none';
+
+                if (data.success && data.candidates && data.candidates.length > 0) {
+                    const grid = document.getElementById('modalCandidateGrid');
+                    grid.style.display = 'grid';
+
+                    data.candidates.forEach((cand, idx) => {
+                        let position = (data.candidates.length > 1)
+                            ? (idx === 0 ? 'Côté Gauche' : 'Côté Droite')
+                            : 'Candidat Unique';
+
+                        const card = document.createElement('div');
+                        card.className = 'modal-candidate-card';
+                        card.innerHTML = `
+                            <img src="${cand.face_image}" alt="${cand.name}">
+                            <div class="cand-name">${cand.name}</div>
+                            <div class="cand-pos">${position}</div>
+                            <div class="check-badge">✓</div>
+                        `;
+                        card.onclick = () => {
+                            document.querySelectorAll('.modal-candidate-card').forEach(c => c.classList.remove('selected'));
+                            card.classList.add('selected');
+                            modalSelectedCandidate = { ...cand, position };
+                            document.getElementById('btnConfirmCandidate').disabled = false;
+                        };
+                        grid.appendChild(card);
+                    });
+
+                    // Auto-sélectionner le 1er si 1 seul candidat
+                    if (data.candidates.length === 1) {
+                        grid.children[0].click();
+                    }
+                } else {
+                    const msgEl = document.getElementById('modalMessage');
+                    msgEl.style.display = 'block';
+                    msgEl.innerHTML = '<i class="fas fa-exclamation-circle" style="font-size:28px;margin-bottom:10px;color:var(--warning);"></i><br>Aucun visage distinct détecté dans les 10 premières secondes.';
+                }
+            } catch(err) {
+                document.getElementById('modalLoader').style.display = 'none';
+                const msgEl = document.getElementById('modalMessage');
+                msgEl.style.display = 'block';
+                msgEl.textContent = 'Erreur lors de la détection : ' + err.message;
+            }
+        }
+
+        function confirmCandidateSelection() {
+            if (!modalSelectedCandidate) return;
+            const cand = modalSelectedCandidate;
+
+            // Mettre à jour les coordonnées globales de suivi
+            selectedCoords = { x: cand.center_x, y: cand.center_y };
+
+            // Afficher le badge dans la sidebar
+            document.getElementById('badgeFaceImg').src = cand.face_image;
+            document.getElementById('badgeName').textContent = cand.name;
+            document.getElementById('badgePos').textContent = cand.position;
+            document.getElementById('selectedCandidateBadge').style.display = 'flex';
+
+            addLog(`🎯 Candidat verrouillé : ${cand.name} — ${cand.position} (cx=${Math.round(cand.center_x)}, cy=${Math.round(cand.center_y)})`, 'var(--primary)');
+            closeCandidateModal();
         }
 
         // Gauges Update
@@ -1290,6 +1614,12 @@
             
             const formData = new FormData();
             formData.append('file', currentFile);
+            
+            if (selectedCoords) {
+                formData.append('target_x', Math.round(selectedCoords.x));
+                formData.append('target_y', Math.round(selectedCoords.y));
+                addLog(`🔒 Lancement de l'analyse verrouillée sur le candidat aux coordonnées (${Math.round(selectedCoords.x)}, ${Math.round(selectedCoords.y)})...`, 'var(--primary)');
+            }
 
             try {
                 const res = await fetch('/analyze_video', { method: 'POST', body: formData });
