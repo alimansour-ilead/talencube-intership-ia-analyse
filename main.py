@@ -19,6 +19,7 @@ from ultralytics import YOLO
 from transformers import AutoImageProcessor, AutoModelForImageClassification, ViTForImageClassification
 import warnings
 import os
+from person_detection import process_video as process_person_video
 import json
 from datetime import datetime
 from collections import deque
@@ -26,7 +27,6 @@ import pickle
 from pathlib import Path
 
 import moviepy.editor as mp
-from moviepy.editor import VideoFileClip, AudioFileClip
 import librosa
 import soundfile as sf
 from models.hubert_model import SpeechEmotionHuBERT
@@ -1093,9 +1093,10 @@ async def export_pdf(data: dict):
         draw_metric_card(15, current_y, "Gestion du Stress", m.get('stress_management', 0))
         draw_metric_card(110, current_y, "Assurance & Confiance", m.get('assurance_level', 0))
         draw_metric_card(15, current_y + 25, "Qualité de Communication", m.get('communication', 0))
-        draw_metric_card(110, current_y + 25, "Engagement / Expressivité", m.get('expressivity', 0))
+        draw_metric_card(15, current_y + 50, "Risque de Mensonge", data.get('analysis', {}).get('score', 0))
         
-        pdf.set_y(current_y + 55)
+        pdf.set_y(current_y + 80)  # Adjust for added risk card
+
 
         # 2. VERDICT DE L'IA
         pdf.set_font("Helvetica", 'B', 12)
@@ -1113,6 +1114,34 @@ async def export_pdf(data: dict):
         pdf.set_text_color(15, 118, 110) if "Faible" in level else pdf.set_text_color(180, 83, 9)
         pdf.cell(0, 8, f"ÉVALUATION GLOBALE : {level}", ln=True)
         pdf.ln(8)
+        
+        # Timeline des anomalies dans le PDF (Localisation du risque de mensonge)
+        dec_timeline = data.get('deception_timeline', [])
+        if dec_timeline:
+            pdf.set_font("Helvetica", 'B', 11)
+            pdf.set_text_color(15, 23, 42)
+            pdf.cell(0, 8, "Timeline Chronologique des Anomalies (Suspicion de mensonge) :", ln=True)
+            pdf.ln(2)
+            
+            for item in dec_timeline[:8]: # Limiter à 8 items max pour ne pas dépasser la page
+                t_val = item.get('time', 0.0)
+                type_val = item.get('type', '').encode('latin-1', 'replace').decode('latin-1')
+                desc_val = item.get('description', '').encode('latin-1', 'replace').decode('latin-1')
+                sev_val = item.get('severity', '')
+                
+                pdf.set_font("Helvetica", 'B', 9)
+                if sev_val == "Élevée":
+                    pdf.set_text_color(220, 38, 38) # Red 600
+                elif sev_val == "Moyenne":
+                    pdf.set_text_color(217, 119, 6) # Amber 600
+                else:
+                    pdf.set_text_color(71, 85, 105) # Slate 600
+                pdf.cell(35, 5, f"[{t_val:.1f}s] - {type_val} : ", ln=0)
+                
+                pdf.set_font("Helvetica", '', 9)
+                pdf.set_text_color(71, 85, 105)
+                pdf.multi_cell(155, 5, desc_val)
+            pdf.ln(4)
 
         # 3. TRANSCRIPTION
         pdf.set_font("Helvetica", 'B', 12)
@@ -1174,8 +1203,105 @@ async def export_pdf(data: dict):
         print(f"Erreur PDF: {e}")
         return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
 
+@app.post("/extract_candidates_preview")
+async def extract_candidates_preview(file: UploadFile = File(...)):
+    """Traite les 10 premières secondes d'une vidéo pour identifier les candidats et extraire leur visage."""
+    import time
+    import base64
+    try:
+        tmp_path = os.path.join(tempfile.gettempdir(), f"preview_{file.filename}")
+        with open(tmp_path, "wb") as buffer:
+            content = await file.read()
+            buffer.write(content)
+
+        video_clip = mp.VideoFileClip(tmp_path)
+        duration = video_clip.duration
+        preview_duration = min(10.0, duration)
+        
+        sample_rate = 1.0  # 1 frame par seconde
+        candidates = {}  # {group_x_index: {'face_img': np_array, 'cx': float, 'cy': float, 'count': int, 'bbox': list}}
+        
+        # Pour chaque seconde
+        for t in np.arange(0, preview_duration, sample_rate):
+            frame = video_clip.get_frame(t)
+            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            faces = detect_faces(frame_bgr)
+            
+            for face_img, conf, bbox, padded_bbox in faces:
+                # Calculer le centre horizontal
+                cx = (bbox[0] + bbox[2]) / 2
+                cy = (bbox[1] + bbox[3]) / 2
+                
+                # Regrouper les visages par leur position horizontale
+                # On tolère une déviation de 15% de la largeur de l'image pour regrouper le même candidat
+                img_w = frame.shape[1]
+                group_key = None
+                for existing_key in candidates.keys():
+                    if abs(existing_key - cx) < (img_w * 0.15):
+                        group_key = existing_key
+                        break
+                
+                if group_key is None:
+                    group_key = cx
+                    candidates[group_key] = {
+                        'face_img': face_img,
+                        'cx': cx,
+                        'cy': cy,
+                        'bbox': bbox,
+                        'count': 1
+                    }
+                else:
+                    # On garde l'image de visage avec la plus grande taille ou netteté (plus grand bbox)
+                    candidates[group_key]['count'] += 1
+                    curr_size = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+                    prev_bbox = candidates[group_key]['bbox']
+                    prev_size = (prev_bbox[2] - prev_bbox[0]) * (prev_bbox[3] - prev_bbox[1])
+                    if curr_size > prev_size:
+                        candidates[group_key]['face_img'] = face_img
+                        candidates[group_key]['cx'] = cx
+                        candidates[group_key]['cy'] = cy
+                        candidates[group_key]['bbox'] = bbox
+
+        video_clip.close()
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+        valid_candidates = []
+        sorted_keys = sorted(candidates.keys())
+        for idx, k in enumerate(sorted_keys):
+            c = candidates[k]
+            face_img = c['face_img']
+            _, buffer = cv2.imencode('.jpg', face_img)
+            jpg_bytes = buffer.tobytes()
+            b64_str = base64.b64encode(jpg_bytes).decode('utf-8')
+            
+            valid_candidates.append({
+                'id': idx + 1,
+                'face_image': f"data:image/jpeg;base64,{b64_str}",
+                'center_x': float(c['cx']),
+                'center_y': float(c['cy']),
+                'bbox': [int(val) for val in c['bbox']],
+                'name': f"Candidat {idx + 1}"
+            })
+
+        return JSONResponse({
+            'success': True,
+            'candidates': valid_candidates,
+            'count': len(valid_candidates)
+        })
+
+    except Exception as e:
+        print(f"Erreur Extraction Preview: {e}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
+
 @app.post("/analyze_video")
-async def analyze_video(file: UploadFile = File(...)):
+async def analyze_video(
+    file: UploadFile = File(...),
+    target_x: Optional[float] = Form(None),
+    target_y: Optional[float] = Form(None)
+):
     """Analyse multimodale complte d'une vido (Visuel + Audio)"""
     import time
     try:
@@ -1197,8 +1323,8 @@ async def analyze_video(file: UploadFile = File(...)):
         # 2. Extraire l'audio et transcrire
         audio_path = tmp_path.replace(".mp4", ".wav")
         video_clip = mp.VideoFileClip(tmp_path)
-        
         has_audio = video_clip.audio is not None
+        person_stats = process_person_video(tmp_path)
         transcript = ""
         speech_rate_real = 0
         
@@ -1238,13 +1364,62 @@ async def analyze_video(file: UploadFile = File(...)):
         
         # On analyse un chantillon de frames pour la performance
         sample_rate = 1.0 # 1 frame par seconde
+        # -------------------------------------------------
+        # Extract preview faces from the first 10 seconds
+        # -------------------------------------------------
+        preview_faces = []  # Will hold base64-encoded images
+        preview_duration = min(10.0, duration)  # seconds
+        import base64, io
+        for t_preview in np.arange(0, preview_duration, sample_rate):
+            frame_preview = video_clip.get_frame(t_preview)
+            frame_preview_bgr = cv2.cvtColor(frame_preview, cv2.COLOR_RGB2BGR)
+            faces_preview = detect_faces(frame_preview_bgr)
+            if faces_preview:
+                # Take the first detected face for preview
+                face_img, _, _, _ = faces_preview[0]
+                # Encode to JPEG in memory
+                _, buffer = cv2.imencode('.jpg', face_img)
+                jpg_bytes = buffer.tobytes()
+                b64_str = base64.b64encode(jpg_bytes).decode('utf-8')
+                preview_faces.append(f"data:image/jpeg;base64,{b64_str}")
+        # End of preview extraction
+        
+        # Initialisation du suivi du candidat sélectionné (verrouillage centroïde)
+        last_cx = target_x
+        last_cy = target_y
+        
         for t_idx, t in enumerate(np.arange(0, duration, sample_rate)):
             frame = video_clip.get_frame(t)
             frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             
             faces = detect_faces(frame_bgr)
+            selected_face = None
             if faces:
-                face_img, conf, bbox, padded_bbox = faces[0]
+                if last_cx is not None and last_cy is not None:
+                    # Chercher le visage le plus proche du dernier centre connu
+                    best_dist = float('inf')
+                    for f_img, f_conf, tight_bbox, padded_bbox in faces:
+                        cx = (tight_bbox[0] + tight_bbox[2]) / 2
+                        cy = (tight_bbox[1] + tight_bbox[3]) / 2
+                        dist = np.sqrt((cx - last_cx)**2 + (cy - last_cy)**2)
+                        
+                        if dist < best_dist:
+                            best_dist = dist
+                            selected_face = (f_img, f_conf, tight_bbox, padded_bbox)
+                    
+                    if selected_face is not None:
+                        # Mettre à jour l'ancre du candidat pour le suivi dynamique
+                        _, _, tight_bbox, _ = selected_face
+                        last_cx = (tight_bbox[0] + tight_bbox[2]) / 2
+                        last_cy = (tight_bbox[1] + tight_bbox[3]) / 2
+                else:
+                    # Par défaut, on prend le plus grand visage (candidat principal)
+                    selected_face = max(faces, key=lambda x: (x[2][2]-x[2][0]) * (x[2][3]-x[2][1]))
+                    last_cx = (selected_face[2][0] + selected_face[2][2]) / 2
+                    last_cy = (selected_face[2][1] + selected_face[2][3]) / 2
+
+            if selected_face:
+                face_img, conf, bbox, padded_bbox = selected_face
                 
                 # Préparation visuelle
                 face_processed = preprocess_face(face_img)
@@ -1435,25 +1610,106 @@ async def analyze_video(file: UploadFile = File(...)):
             "processing_time": round(processing_time, 2)
         }
 
-        return {
+        def to_serializable(obj):
+            """Recursively convert NumPy and Torch objects to native Python types for JSON serialization."""
+            if isinstance(obj, (np.integer, np.floating)):
+                return obj.item()
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            if isinstance(obj, torch.Tensor):
+                return obj.tolist()
+            if isinstance(obj, dict):
+                return {k: to_serializable(v) for k, v in obj.items()}
+            if isinstance(obj, (list, tuple)):
+                return [to_serializable(v) for v in obj]
+            return obj
+
+        # Construction de la timeline de suspicion de mensonge / stress (localisation précise)
+        deception_timeline = []
+        
+        # 1. Parcourir les frames pour trouver les pics de stress ou de micro-expressions
+        for idx, f in enumerate(frames_results):
+            t = f['timestamp']
+            emotion = f['emotion']
+            conf = f['confidence']
+            
+            # Pic de stress
+            if emotion in ['fear', 'angry', 'disgust'] and conf > 0.55:
+                deception_timeline.append({
+                    "time": float(t),
+                    "type": "Stress Émotionnel",
+                    "severity": "Élevée" if conf > 0.75 else "Moyenne",
+                    "description": f"Pic de tension détecté ({EMOTION_NAMES_FR.get(emotion, emotion)}) avec {int(conf*100)}% de confiance."
+                })
+            
+            # Détection de micro-expression (changement soudain d'émotion en 1 seconde)
+            if idx >= 1 and frames_results[idx]['emotion'] != frames_results[idx-1]['emotion']:
+                prev_e = frames_results[idx-1]['emotion']
+                curr_e = frames_results[idx]['emotion']
+                if prev_e != 'neutral' and curr_e != 'neutral':
+                    deception_timeline.append({
+                        "time": float(t),
+                        "type": "Micro-expression",
+                        "severity": "Moyenne",
+                        "description": f"Changement émotionnel brusque de '{EMOTION_NAMES_FR.get(prev_e, prev_e)}' vers '{EMOTION_NAMES_FR.get(curr_e, curr_e)}'."
+                    })
+        
+        # 2. Parcourir les segments de transcription pour repérer les anomalies verbales
+        for chunk in transcript_chunks:
+            text = chunk.get('text', '').lower()
+            start_t = chunk.get('timestamp', [0])[0]
+            
+            hesitation_words = ["euh", "bah", "en fait", "je crois", "peut-être", "genre", "comment dire", "je ne sais pas"]
+            over_justification = ["honnêtement", "pour être franc", "à vrai dire", "croyez-moi", "sincèrement", "je vous jure"]
+            
+            found_hesitations = [w for w in hesitation_words if w in text]
+            found_justifications = [w for w in over_justification if w in text]
+            
+            if found_hesitations:
+                deception_timeline.append({
+                    "time": float(start_t),
+                    "type": "Hésitation Verbale",
+                    "severity": "Moyenne" if len(found_hesitations) > 1 else "Faible",
+                    "description": f"Le candidat hésite dans son discours : '{', '.join(found_hesitations)}'."
+                })
+            if found_justifications:
+                deception_timeline.append({
+                    "time": float(start_t),
+                    "type": "Sur-justification",
+                    "severity": "Moyenne",
+                    "description": f"Emploi d'expressions d'affirmation excessive ('{', '.join(found_justifications)}'), indiquant un besoin excessif de convaincre."
+                })
+
+        # Trier la timeline par timestamp croissant
+        deception_timeline = sorted(deception_timeline, key=lambda x: x['time'])
+
+        # Construct response payload
+        response_payload = {
             "success": True,
-            "status": "success",
-            "filename": file.filename,
             "transcript": transcript_text,
-            "transcript_chunks": transcript_chunks,
-            "metrics": final_metrics,
-            "soft_skills": soft_skills,
-            "inconsistencies": inconsistencies,
+            "preview_faces": preview_faces,
+            "frames": frames_results,
             "timeline": timeline,
             "metrics_history": metrics_history,
             "system_kpis": system_kpis,
-            "ai_feedback": ai_feedback,
+            "metrics": final_metrics,
+            "soft_skills": soft_skills,
             "analysis": {
-                "score": float(final_score),
+                "score": final_score,
                 "level": risk_level,
-                "details": risk_details
-            }
+                "details": risk_details,
+                "deception_timeline": deception_timeline
+            },
+            "feedback": ai_feedback,
+            "inconsistencies": inconsistencies
         }
+
+        return JSONResponse(to_serializable(response_payload))
+
+
+
+
+# stray diff line removed
     except Exception as e:
         print(f"Erreur Analyse Video: {e}")
         return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
