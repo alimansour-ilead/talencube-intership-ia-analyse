@@ -25,7 +25,8 @@ from datetime import datetime
 from collections import deque
 import pickle
 from pathlib import Path
-
+import requests
+from urllib.parse import urlparse
 import moviepy.editor as mp
 import librosa
 import soundfile as sf
@@ -35,6 +36,14 @@ import tempfile
 from transformers import pipeline
 import imageio_ffmpeg as ffmpeg_pkg
 from moviepy.config import change_settings
+from fastapi import Form as FastAPIForm
+
+# ==========================================================
+# BASE DE DONNÉES POUR LE STOCKAGE DES VIDÉOS IMPORTÉES
+# ==========================================================
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, LargeBinary, Text
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 
 warnings.filterwarnings('ignore')
 
@@ -60,6 +69,31 @@ from fastapi.responses import RedirectResponse
 @app.get("/")
 async def root():
     return RedirectResponse(url="/dashboard")
+
+# Configuration de la base de données SQLite
+DATABASE_URL = "sqlite:///./videos.db"
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+class VideoRecord(Base):
+    __tablename__ = "videos"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    url = Column(String, nullable=False)
+    filename = Column(String, nullable=False)
+    video_data = Column(LargeBinary, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    analysis_result = Column(Text, nullable=True)
+
+# Créer les tables
+Base.metadata.create_all(bind=engine)
+
+# Modèle Pydantic pour les requêtes URL
+class VideoURLRequest(BaseModel):
+    url: str
+    filename: Optional[str] = None
+    store_in_db: Optional[bool] = True
 
 print("="*60)
 print("INITIALISATION DES MODELES D'ANALYSE EMOTIONNELLE")
@@ -970,6 +1004,40 @@ async def add_training_data(emotion: str, image: UploadFile = File(...)):
         return JSONResponse({'error': str(e)}, status_code=500)
 
 # ==========================================================
+# FONCTION POUR TÉLÉCHARGER UNE VIDÉO DEPUIS UNE URL
+# ==========================================================
+async def download_video_from_url(url: str, custom_filename: str = None, max_size_mb: int = 500):
+    """Télécharge une vidéo depuis une URL"""
+    try:
+        # Téléchargement avec streaming
+        response = requests.get(url, stream=True, timeout=60)
+        response.raise_for_status()
+        
+        # Vérifier la taille
+        content_length = response.headers.get('content-length')
+        if content_length and int(content_length) > max_size_mb * 1024 * 1024:
+            raise ValueError(f"Vidéo trop grande (max {max_size_mb}MB)")
+        
+        # Extraire ou définir le nom du fichier
+        if custom_filename:
+            filename = custom_filename
+        else:
+            parsed = urlparse(url)
+            filename = os.path.basename(parsed.path)
+            if not filename or not filename.endswith(('.mp4', '.avi', '.mov', '.webm', '.mkv')):
+                filename = f"video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
+        
+        # Sauvegarder temporairement
+        temp_path = os.path.join(tempfile.gettempdir(), filename)
+        with open(temp_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        
+        return temp_path, filename
+    except Exception as e:
+        raise Exception(f"Erreur téléchargement: {str(e)}")
+
+# ==========================================================
 # ENDPOINTS API
 # ==========================================================
 @app.get("/")
@@ -1294,6 +1362,91 @@ async def extract_candidates_preview(file: UploadFile = File(...)):
         print(f"Erreur Extraction Preview: {e}")
         import traceback
         traceback.print_exc()
+        return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
+
+@app.post("/analyze_video_from_url")
+async def analyze_video_from_url(
+    request: VideoURLRequest,
+    target_x: Optional[float] = FastAPIForm(None),
+    target_y: Optional[float] = FastAPIForm(None)
+):
+    """Analyse une vidéo à partir d'une URL (avec stockage optionnel en BDD)"""
+    import time
+    
+    temp_path = None
+    try:
+        # 1. Télécharger la vidéo depuis l'URL
+        temp_path, filename = await download_video_from_url(request.url, request.filename)
+        
+        # 2. Optionnel : Stocker dans la base de données
+        video_id = None
+        if request.store_in_db:
+            with open(temp_path, 'rb') as f:
+                video_bytes = f.read()
+            
+            db = SessionLocal()
+            video_record = VideoRecord(
+                url=request.url,
+                filename=filename,
+                video_data=video_bytes
+            )
+            db.add(video_record)
+            db.commit()
+            db.refresh(video_record)
+            video_id = video_record.id
+            db.close()
+        
+        # 3. Analyser la vidéo (réutiliser votre logique existante)
+        # Créer un objet UploadFile virtuel
+        from fastapi import UploadFile
+        class VirtualUploadFile:
+            def __init__(self, path, filename):
+                self.filename = filename
+                self.file = open(path, 'rb')
+            async def read(self):
+                return self.file.read()
+            def close(self):
+                self.file.close()
+        
+        virtual_file = VirtualUploadFile(temp_path, filename)
+        
+        # Appeler votre fonction d'analyse existante
+        result = await analyze_video(
+            file=virtual_file,
+            target_x=target_x,
+            target_y=target_y
+        )
+        
+        virtual_file.close()
+        
+        # 4. Mettre à jour la BDD avec les résultats
+        if video_id and request.store_in_db:
+            db = SessionLocal()
+            video_record = db.query(VideoRecord).filter(VideoRecord.id == video_id).first()
+            if video_record:
+                video_record.analysis_result = json.dumps(result.body if hasattr(result, 'body') else result)
+                db.commit()
+            db.close()
+        
+        # 5. Nettoyer
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+        
+        # 6. Retourner les résultats avec l'ID
+        if hasattr(result, 'body'):
+            response_data = result.body if isinstance(result.body, dict) else result.body
+        else:
+            response_data = result
+        
+        if isinstance(response_data, dict):
+            response_data['video_id'] = video_id
+            response_data['source_url'] = request.url
+        
+        return JSONResponse(response_data)
+        
+    except Exception as e:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
         return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
 
 @app.post("/analyze_video")
@@ -1706,10 +1859,6 @@ async def analyze_video(
 
         return JSONResponse(to_serializable(response_payload))
 
-
-
-
-# stray diff line removed
     except Exception as e:
         print(f"Erreur Analyse Video: {e}")
         return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
@@ -1966,7 +2115,7 @@ async def analyze_realtime(
 
         # 3. Métriques multimodales et Qualité / Fiabilité
         v_probs = None
-        face_status = 'Aucun visage detecté ⚠️'
+        face_status = 'Aucun visage detecté '
         brightness = 0
         blur_val = 0
         if face_img is not None:
@@ -1976,13 +2125,13 @@ async def analyze_realtime(
             blur_val = float(cv2.Laplacian(gray, cv2.CV_64F).var())
             
             if brightness < 45:
-                face_status = 'Sombre ⚠️'
+                face_status = 'Sombre '
             elif brightness > 220:
-                face_status = 'Exposé ⚠️'
+                face_status = 'Exposé '
             elif blur_val < 50:
-                face_status = 'Flou ⚠️'
+                face_status = 'Flou '
             else:
-                face_status = 'Optimal ✅'
+                face_status = 'Optimal '
 
             inputs_v = base_processor(images=cv2.cvtColor(preprocess_face(face_img), cv2.COLOR_BGR2RGB), return_tensors="pt").to(device)
             with torch.no_grad():
@@ -2050,17 +2199,17 @@ if __name__ == "__main__":
     print("\n" + "="*60)
     print("ANALYSE EMOTIONNELLE AVANCEE - SERVEUR DEMARRE")
     print("="*60)
-    print(f"API: http://localhost:8088")
-    print(f"Dashboard: http://localhost:8088/dashboard")
-    print(f"Health: http://localhost:8088/health")
-    print(f"Model Info: http://localhost:8088/model_info")
+    print(f"API: http://localhost:8089")
+    print(f"Dashboard: http://localhost:8089/dashboard")
+    print(f"Health: http://localhost:8089/health")
+    print(f"Model Info: http://localhost:8089/model_info")
     print("="*60)
     print("\nOUVREZ DANS VOTRE NAVIGATEUR:")
-    print("   http://localhost:8088/dashboard")
-    print("   http://localhost:8088/kpi_dashboard  <-- (Nouveau !)")
+    print("   http://localhost:8089/dashboard")
+    print("   http://localhost:8089/kpi_dashboard  <-- (Nouveau !)")
     print("\nPOUR ENTRAINER LE MODELE:")
     print("   POST /train avec dataset_path")
     print("   POST /add_training_data pour ajouter des exemples")
     print("\n" + "="*60 + "\n")
     
-    uvicorn.run(app, host="0.0.0.0", port=8088, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=8089, log_level="info")
