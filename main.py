@@ -1,6 +1,6 @@
 # app.py - Analyse motionnelle avec Fine-tuning et entranement
 from fastapi import FastAPI, File, UploadFile, BackgroundTasks, Form
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Response
+from fastapi.responses import  JSONResponse,  Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Optional
@@ -64,11 +64,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 _url_video_cache = {}
-from fastapi.responses import RedirectResponse
-
-@app.get("/")
-async def root():
-    return RedirectResponse(url="/dashboard")
 
 # Configuration de la base de données SQLite
 DATABASE_URL = "sqlite:///./videos.db"
@@ -1046,18 +1041,23 @@ async def download_video_from_url(url: str, custom_filename: str = None, max_siz
 @app.get("/")
 async def root():
     return {
-        "name": "Enhanced Emotion Analysis API",
+        "name": "Nexum IA - Emotion Analysis API",
         "version": "2.0.0",
         "status": "online",
-        "port": 8009,
-        "emotions": EMOTION_LABELS,
-        "training_available": True,
-        "features": [
-            "Fine-tuning personnalis",
-            "Dtection de micro-expressions",
-            "Analyse de vracit",
-            "Heatmap motionnelle"
-        ]
+        "endpoints": {
+            "health":                   "GET  /health",
+            "model_info":               "GET  /model_info",
+            "analyze_realtime":         "POST /analyze_realtime",
+            "analyze_video":            "POST /analyze_video",
+            "analyze_video_url":        "POST /analyze_video_url",
+            "import_video_from_url":    "POST /import_video_from_url",
+            "analyze_imported_video":   "POST /analyze_imported_video",
+            "extract_candidates":       "POST /extract_candidates_preview",
+            "export_pdf":               "POST /export_pdf",
+            "chatbot":                  "POST /chatbot",
+            "train":                    "POST /train",
+            "evaluate":                 "POST /evaluate",
+        }
     }
 
 @app.get("/health")
@@ -1085,10 +1085,6 @@ async def model_info():
         "model_path": Config.MODEL_PATH
     }
 
-@app.get("/report")
-async def report_page():
-    """Sert la page de génération de rapport PDF"""
-    return FileResponse("report.html")
 
 @app.post("/export_pdf")
 async def export_pdf(data: dict):
@@ -2183,23 +2179,7 @@ async def analyze_realtime(
         traceback.print_exc()
         return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
 
-@app.get("/dashboard")
-async def dashboard():
-    """Interface web premium pour l'analyse des candidats"""
-    with open("dashboard.html", "r", encoding="utf-8") as f:
-        html_content = f.read()
-    return HTMLResponse(content=html_content)
 
-@app.get("/kpi_dashboard")
-async def kpi_dashboard():
-    """Interface de monitoring des KPIs techniques"""
-    with open("kpi_dashboard.html", "r", encoding="utf-8") as f:
-        html_content = f.read()
-    return HTMLResponse(content=html_content)
-# ═══════════════════════════════════════════════════════════════
-# COLLER CE CODE dans main.py, juste AVANT la ligne:
-#   if __name__ == "__main__":
-# ═══════════════════════════════════════════════════════════════
 
 @app.post("/import_video_from_url")
 async def import_video_from_url(url: str = FastAPIForm(...)):
