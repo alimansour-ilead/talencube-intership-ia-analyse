@@ -49,11 +49,14 @@ warnings.filterwarnings('ignore')
 
 # Configurer FFmpeg via imageio-ffmpeg
 FFMPEG_PATH = ffmpeg_pkg.get_ffmpeg_exe()
-change_settings({"FFMPEG_BINARY": FFMPEG_PATH})
-os.environ["PATH"] += os.pathsep + os.path.dirname(FFMPEG_PATH)
-print(f"FFmpeg configuré: {FFMPEG_PATH}")
+from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(title="Emotion Analysis API - Enhanced")
+
+# Ensure the static directory exists before mounting
+os.makedirs("static", exist_ok=True)
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # CORS
 app.add_middleware(
@@ -91,6 +94,7 @@ class VideoURLRequest(BaseModel):
     store_in_db: Optional[bool] = True
     skip_face_detection: Optional[bool] = False
     public_id: Optional[str] = None
+
 print("="*60)
 print("INITIALISATION DES MODELES D'ANALYSE EMOTIONNELLE")
 print("="*60)
@@ -378,8 +382,8 @@ def detect_faces(frame):
                                 face_box = (x1, y1, x2, face_zone_y2)
                                 faces.append((frame[y1:face_zone_y2, x1:x2], conf, face_box, face_box))
     
-    # 2. Fallback ultime Haar Cascade global (si YOLO n'a rien détecté du tout)
-    if not faces:
+    # 2. Fallback ultime Haar Cascade global (si YOLO n'a rien détecté du tout et qu'on n'a pas le modèle de visage dédié)
+    if not faces and not is_face_model:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         detected_faces = face_cascade.detectMultiScale(gray, 1.05, 3, minSize=(40, 40))
         for (x, y, w, h) in detected_faces:
@@ -393,16 +397,6 @@ def detect_faces(frame):
             faces.append((frame[y1_p:y2_p, x1_p:x2_p], 0.8, tight_box, (x1_p, y1_p, x2_p, y2_p)))
             
     return faces
-
-def detect_faces_with_fullframe_fallback(frame):
-    faces = detect_faces(frame)  # Essai normal YOLO/Haar
-    if faces:
-        return faces  # Visage trouvé → analyse précise
-    else:
-        # Fallback : frame entière (mieux que rien)
-        h, w = frame.shape[:2]
-        log.warning("Aucun visage détecté, fallback frame entière")
-        return [(frame, 0.5, (0, 0, w, h), (0, 0, w, h))]
 
 def preprocess_face(face):
     """Prparation de l'image pour le processeur ViT"""
@@ -1410,16 +1404,8 @@ async def analyze_video_from_url(request: VideoURLRequest):
 
         virtual_file = VirtualUploadFile(temp_path, filename)
 
-        if request.skip_face_detection:
-            # Remplace detect_faces par la version avec fallback frame entière
-            original_detect_faces = globals()['detect_faces']
-            globals()['detect_faces'] = detect_faces_with_fullframe_fallback
-            try:
-                result = await analyze_video(file=virtual_file, target_x=None, target_y=None)
-            finally:
-                globals()['detect_faces'] = original_detect_faces  # toujours restaurer
-        else:
-            result = await analyze_video(file=virtual_file, target_x=None, target_y=None)
+        # On utilise TOUJOURS la fonction detect_faces normale (pas de fallback frame entière)
+        result = await analyze_video(file=virtual_file, target_x=None, target_y=None)
 
         if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
@@ -1440,6 +1426,7 @@ async def analyze_video_from_url(request: VideoURLRequest):
             'error_type': type(e).__name__,
             'details': error_details
         }, status_code=500)
+
 @app.post("/analyze_video")
 async def analyze_video(
     file: UploadFile = File(...),
@@ -1456,58 +1443,60 @@ async def analyze_video(
             buffer.write(content)
 
         print(f"Analyse de la video: {file.filename}")
+        # Load video clip
+        video_clip = mp.VideoFileClip(tmp_path)
+        has_audio = video_clip.audio is not None
 
+        # Prepare audio path placeholder
+        audio_path = None
         audio_data = None
-        sr = 16000
         transcript_text = ""
         transcript_chunks = []
         speech_rate_norm = 0
         speech_rate_real = 0
 
-        # 2. Extraire l'audio et transcrire
-        audio_path = tmp_path.replace(".mp4", ".wav")
-        video_clip = mp.VideoFileClip(tmp_path)
-        has_audio = video_clip.audio is not None
-        person_stats = process_person_video(tmp_path)
-        transcript = ""
-        speech_rate_real = 0
-
         if has_audio:
+            # Write audio to temporary wav file
+            audio_path = os.path.join(tempfile.gettempdir(), f"{os.path.splitext(file.filename)[0]}_audio.wav")
             video_clip.audio.write_audiofile(audio_path, verbose=False, logger=None)
 
-            # Charger l'audio complet pour le segmentage via moviepy
-            from moviepy.editor import AudioFileClip
+            # Load full audio for segmentation
             try:
+                from moviepy.editor import AudioFileClip
                 temp_clip = AudioFileClip(audio_path)
                 wav_full = audio_path + "_full.wav"
                 temp_clip.write_audiofile(wav_full, verbose=False, logger=None, fps=16000, nbytes=2, codec='pcm_s16le')
-
                 import soundfile as sf
                 audio_data, sr = sf.read(wav_full)
                 if len(audio_data.shape) > 1:
                     audio_data = np.mean(audio_data, axis=1)
-
-                if os.path.exists(wav_full): os.remove(wav_full)
+                if os.path.exists(wav_full):
+                    os.remove(wav_full)
                 temp_clip.close()
-
-                # Transcription réelle avec timestamps (en passant l'audio brut pour éviter ffmpeg)
-                print("Transcription en cours...")
-                ts_result = transcriber({"sampling_rate": 16000, "raw": audio_data}, return_timestamps=True)
-                transcript_text = ts_result["text"]
-                transcript_chunks = ts_result.get("chunks", [])
-                print(f"Transcription terminée: {transcript_text[:50]}...")
             except Exception as e_proc:
                 print(f"Erreur traitement audio video: {e_proc}")
                 has_audio = False
 
-        # 3. Extraire les frames cls (ex: 1 frame par seconde)
+        # 3. Extraire les frames clés (ex: 1 frame par seconde)
         duration = video_clip.duration
+        # Validation: ensure video is long enough for analysis
+        MIN_VIDEO_DURATION = 5  # seconds, configurable
+        if duration < MIN_VIDEO_DURATION:
+            video_clip.close()
+            return JSONResponse(
+                {
+                    "success": False,
+                    "error": f"Vidéo trop courte ({duration:.1f}s). Minimum requis : {MIN_VIDEO_DURATION}s."
+                },
+                status_code=400,
+            )
         frames_results = []
         visual_history = []
         prev_probs = None
 
         # On analyse un chantillon de frames pour la performance
         sample_rate = 1.0 # 1 frame par seconde
+
         # -------------------------------------------------
         # Extract preview faces from the first 10 seconds
         # -------------------------------------------------
@@ -1527,6 +1516,12 @@ async def analyze_video(
                 b64_str = base64.b64encode(jpg_bytes).decode('utf-8')
                 preview_faces.append(f"data:image/jpeg;base64,{b64_str}")
         # End of preview extraction
+        # Check for presence of faces in the first 10 seconds
+        face_popup = False
+        if len(preview_faces) == 0:
+            face_popup = True
+        # Determine audio presence (has_audio already set)
+        audio_popup = not has_audio
 
         # Initialisation du suivi du candidat sélectionné (verrouillage centroïde)
         last_cx = target_x
@@ -1662,7 +1657,7 @@ async def analyze_video(
         # Nettoyage
         video_clip.close()
         if os.path.exists(tmp_path): os.remove(tmp_path)
-        if os.path.exists(audio_path): os.remove(audio_path)
+        if audio_path and os.path.exists(audio_path): os.remove(audio_path)
 
         # Synthse globale
         if not frames_results:
@@ -1832,6 +1827,9 @@ async def analyze_video(
             "success": True,
             "transcript": transcript_text,
             "preview_faces": preview_faces,
+            # Flags for UI popups
+            "face_popup": len(preview_faces) == 0,  # No faces in first 10 seconds
+            "audio_popup": not has_audio,  # No audio detected (if applicable)
             "frames": frames_results,
             "timeline": timeline,
             "metrics_history": metrics_history,
@@ -1845,8 +1843,47 @@ async def analyze_video(
                 "deception_timeline": deception_timeline
             },
             "feedback": ai_feedback,
-            "inconsistencies": inconsistencies
+            "inconsistencies": inconsistencies,
+            # Strengths derived from final metrics
+            "strengths": {
+                "stress_management": final_metrics.get("stress_management", 0),
+                "communication": final_metrics.get("communication", 0),
+                "assurance_level": final_metrics.get("assurance_level", 0),
+                "expressivity": final_metrics.get("expressivity", 0),
+                "speech_rate": final_metrics.get("speech_rate", 0)
+            },
+            # Simple suggestions based on low scores (<70)
+            "suggestions": [
+                *(
+                    [
+                        f"Améliorer la gestion du stress (actuel: {final_metrics.get('stress_management', 0):.1f}%). Considérez des exercices de respiration avant l'entretien."
+                    ] if final_metrics.get('stress_management', 0) < 70 else []
+                ),
+                *(
+                    [
+                        f"Travailler la communication (actuel: {final_metrics.get('communication', 0):.1f}%). Entraînez-vous à formuler des réponses claires et structurées."
+                    ] if final_metrics.get('communication', 0) < 70 else []
+                ),
+                *(
+                    [
+                        f"Renforcer l'assurance (actuel: {final_metrics.get('assurance_level', 0):.1f}%). Posez-vous des questions de simulation pour gagner en confiance."
+                    ] if final_metrics.get('assurance_level', 0) < 70 else []
+                ),
+                *(
+                    [
+                        f"Améliorer l'expressivité (actuel: {final_metrics.get('expressivity', 0):.1f}%). Travaillez votre gestuelle et votre ton de voix."
+                    ] if final_metrics.get('expressivity', 0) < 70 else []
+                ),
+                *(
+                    [
+                        f"Optimiser le débit de parole (actuel: {final_metrics.get('speech_rate', 0):.1f} mots/min). Pratiquez avec un métronome ou enregistrez-vous."
+                    ] if final_metrics.get('speech_rate', 0) < 70 else []
+                )
+            ]
         }
+# Duplicate response payload block removed
+
+# Duplicate response payload block removed
 
         return JSONResponse(to_serializable(response_payload))
 
@@ -1943,7 +1980,7 @@ async def analyze_frame(frame: Optional[UploadFile] = File(None), video: Optiona
             })
 
         results = []
-        for face, det_conf, bbox in faces:
+        for face, det_conf, bbox, padded_bbox in faces:
             emotion, confidence, top3 = predict_emotion_enhanced(face)
 
             # Plus de simulation arbitraire, on utilise les scores du modèle
@@ -2142,6 +2179,26 @@ async def analyze_realtime(
 
         metrics = calculate_candidate_metrics(v_probs, audio_probs)
 
+        # 4. Update 3D viewer shared state
+        try:
+            if v_probs is not None:
+                _latest_3d_data["emotion_probs"] = {EMOTION_LABELS[i]: float(v_probs[i]) for i in range(len(EMOTION_LABELS))}
+            _latest_3d_data["emotion"] = emotion
+            _latest_3d_data["confidence"] = float(confidence)
+            # Point cloud from raw frame bytes (best-effort)
+            pc = generate_pointcloud_from_frame(contents)
+            _latest_3d_data["pointcloud"] = pc
+            # Waveform from audio or synthetic demo
+            if audio and 'y' in locals() and len(y) > 0:
+                step = max(1, len(y) // 256)
+                wf = y[::step][:256]
+                _latest_3d_data["waveform"] = [float(v) for v in wf]
+            else:
+                import math as _math
+                _latest_3d_data["waveform"] = [_math.sin(i * 0.2) * 0.3 for i in range(256)]
+        except Exception:
+            pass  # Never let 3D state update break the primary response
+
         return JSONResponse({
             'success': True,
             'faces_detected': face_img is not None,
@@ -2165,13 +2222,12 @@ async def analyze_realtime(
                 }
             }
         })
+
     except Exception as e:
         print(f"Erreur temps réel: {e}")
         import traceback
         traceback.print_exc()
         return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
-
-
 
 @app.post("/import_video_from_url")
 async def import_video_from_url(url: str = FastAPIForm(...)):
@@ -2214,6 +2270,19 @@ async def analyze_imported_video(video_id: int = FastAPIForm(...)):
         temp_path = cached["path"]
         filename = cached["filename"]
         source_url = cached["url"]
+
+        # Validate video duration (must be at least 5 seconds)
+        cap = cv2.VideoCapture(temp_path)
+        if not cap.isOpened():
+            return JSONResponse({'success': False, 'error': 'Impossible d\'ouvrir la vidéo pour validation'}, status_code=500)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        duration = frame_count / fps if fps else 0
+        cap.release()
+        if duration < 5:
+            # Video too short, reject processing
+            return JSONResponse({'success': False, 'error': f'Vidéo trop courte ({duration:.1f}s). Minimum requis: 5 secondes.'}, status_code=400)
+
 
         if not os.path.exists(temp_path):
             return JSONResponse({"success": False, "error": "Fichier temporaire expiré. Re-importez l'URL."}, status_code=404)
@@ -2307,23 +2376,278 @@ async def test_url(request: dict):
             'error': str(e),
             'diagnostic': 'URL inaccessible'
         })
+# ==========================================================
+# ENDPOINTS POUR LE DASHBOARD - KPIs MODÈLE
+# ==========================================================
+# ==========================================================
+# ENDPOINTS POUR LE DASHBOARD - KPIs MODÈLE
+# ==========================================================
+
+@app.get("/report")
+async def report_page():
+    """Sert la page de rapport d'analyse"""
+    from fastapi.responses import HTMLResponse
+    html_content = '''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Rapport d'analyse - Nexum IA</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 40px; background: #0a0a1a; color: #e0e0ff; }
+            .container { max-width: 800px; margin: 0 auto; background: #1a1a2e; padding: 30px; border-radius: 20px; }
+            h1 { color: #00f2ff; }
+            .metric { margin: 20px 0; padding: 15px; background: rgba(255,255,255,0.05); border-radius: 10px; }
+            .btn { background: #00f2ff; color: #000; padding: 12px 24px; border: none; border-radius: 8px; cursor: pointer; text-decoration: none; display: inline-block; margin-top: 20px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>📊 Rapport d'analyse</h1>
+            <div id="content">Chargement des données...</div>
+            <button class="btn" onclick="window.location.href='/dashboard'">← Retour au Dashboard</button>
+        </div>
+        <script>
+            const data = sessionStorage.getItem('lastAnalysis');
+            if (data) {
+                const analysis = JSON.parse(data);
+                const content = document.getElementById('content');
+                let html = '<div class="metric"><strong>🎭 Émotion dominante :</strong> ' + (analysis.emotion || 'N/A') + '</div>';
+                html += '<div class="metric"><strong>📝 Transcription :</strong><br>' + (analysis.transcript || 'Aucune') + '</div>';
+                if (analysis.analysis) {
+                    html += '<div class="metric"><strong>⚠️ Risque de tromperie :</strong> ' + (analysis.analysis.score || 0) + '%</div>';
+                    html += '<div class="metric"><strong>📊 Niveau :</strong> ' + (analysis.analysis.level || 'N/A') + '</div>';
+                }
+                if (analysis.metrics) {
+                    html += '<div class="metric"><strong>🧠 Gestion du stress :</strong> ' + Math.round(analysis.metrics.stress_management || 0) + '%</div>';
+                    html += '<div class="metric"><strong>💬 Communication :</strong> ' + Math.round(analysis.metrics.communication || 0) + '%</div>';
+                    html += '<div class="metric"><strong>🎯 Assurance :</strong> ' + Math.round(analysis.metrics.assurance_level || 0) + '%</div>';
+                }
+                content.innerHTML = html;
+            } else {
+                document.getElementById('content').innerHTML = '<p>Aucune analyse récente trouvée. Effectuez d\'abord une analyse complète.</p>';
+            }
+        </script>
+    </body>
+    </html>
+    '''
+    return HTMLResponse(content=html_content)
+
+
+@app.get("/dashboard")
+async def dashboard_page():
+    """Sert la page dashboard"""
+    from fastapi.responses import HTMLResponse
+    # Lit le fichier dashboard.html qui doit être dans le même dossier
+    with open("dashboard.html", "r", encoding="utf-8") as f:
+        dashboard_html = f.read()
+    return HTMLResponse(content=dashboard_html)
+
+
+@app.get("/kpi_dashboard")
+async def kpi_dashboard_page():
+    """Sert la page KPI dashboard"""
+    from fastapi.responses import HTMLResponse
+    html_content = '''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>KPIs Dashboard - Nexum IA</title>
+        <style>
+            body { font-family: Arial, sans-serif; background: #0a0a1a; color: #e0e0ff; padding: 20px; }
+            .container { max-width: 1200px; margin: 0 auto; }
+            .card { background: #1a1a2e; border-radius: 20px; padding: 20px; margin-bottom: 20px; border: 1px solid rgba(0,242,255,0.2); }
+            h1 { color: #00f2ff; }
+            .metric { font-size: 32px; font-weight: bold; color: #00f2ff; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="card">
+                <h1>📈 Dashboard des KPIs Système</h1>
+                <p>Indicateurs de performance de l'API d'analyse émotionnelle</p>
+            </div>
+            <div class="card">
+                <h2>🖥️ État du système</h2>
+                <div id="health"></div>
+            </div>
+            <div class="card">
+                <h2>📊 Modèle chargé</h2>
+                <div id="modelInfo"></div>
+            </div>
+            <button onclick="window.location.href='/dashboard'" style="background: #00f2ff; color: #000; padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer;">← Retour Dashboard</button>
+        </div>
+        <script>
+            async function loadHealth() {
+                try {
+                    const res = await fetch('/health');
+                    const data = await res.json();
+                    document.getElementById('health').innerHTML = `
+                        <p>✅ Statut: ${data.status}</p>
+                        <p>🖥️ Device: ${data.device}</p>
+                        <p>📊 Analyses totales: ${data.history?.total_analyses || 0}</p>
+                    `;
+                } catch(e) {
+                    document.getElementById('health').innerHTML = '<p>❌ Erreur de connexion</p>';
+                }
+            }
+            async function loadModelInfo() {
+                try {
+                    const res = await fetch('/model_info');
+                    const data = await res.json();
+                    document.getElementById('modelInfo').innerHTML = `
+                        <p>🤖 Type: ${data.model_type}</p>
+                        <p>🎭 Émotions: ${data.emotions?.join(', ')}</p>
+                        <p>📁 Entraîné: ${data.is_trained ? '✅ Oui' : '❌ Non'}</p>
+                    `;
+                } catch(e) {
+                    document.getElementById('modelInfo').innerHTML = '<p>❌ Erreur de chargement</p>';
+                }
+            }
+            loadHealth();
+            loadModelInfo();
+        </script>
+    </body>
+    </html>
+    '''
+    return HTMLResponse(content=html_content)
+@app.post("/candidate_summary")
+async def candidate_summary(
+    file: UploadFile = File(None),
+    video_url: Optional[str] = Form(None)
+) -> JSONResponse:
+    """Return a summary of the candidate by analyzing the uploaded video or a video URL.
+    If neither is provided, returns a 400 error.
+    """
+    import json
+    # Prioritize URL if provided
+    if video_url:
+        request = VideoURLRequest(url=video_url, filename=None)
+        result = await analyze_video_from_url(request)
+    elif file:
+        result = await analyze_video(file=file, target_x=None, target_y=None)
+    else:
+        return JSONResponse({"error": "Aucun fichier ou URL fourni."}, status_code=400)
+
+    # If result is a JSONResponse, extract its JSON content
+    if isinstance(result, JSONResponse):
+        body = result.body
+        if isinstance(body, (bytes, bytearray)):
+            data = json.loads(body.decode())
+        else:
+            data = json.loads(body)
+        return JSONResponse(content=data)
+    # Sinon, retourner tel quel
+    return result
+
+# ==========================================================
+# 3D VIEWER INTEGRATION
+# ==========================================================
+from three_d_utils import generate_pointcloud_from_frame, extract_landmarks, landmarks_to_pointcloud
+import math
+
+# In-memory store for the latest analysis frame data (used by 3D viewer)
+_latest_3d_data = {
+    "pointcloud": {"points": []},
+    "emotion": "neutral",
+    "confidence": 0.0,
+    "emotion_probs": {e: 0.0 for e in EMOTION_LABELS},
+    "waveform": []
+}
+
+@app.get("/3d_viewer")
+async def serve_3d_viewer():
+    """Serve the 3D interactive viewer page"""
+    from fastapi.responses import HTMLResponse
+    with open("3d_viewer.html", "r", encoding="utf-8") as f:
+        html = f.read()
+    return HTMLResponse(content=html)
+
+@app.post("/api/pointcloud")
+async def api_pointcloud(frame: UploadFile = File(...)):
+    """
+    Accept a JPEG frame and return a 3-D point-cloud (facial landmarks).
+    If MediaPipe is unavailable the utility falls back to a geometric demo cloud.
+    """
+    try:
+        contents = await frame.read()
+        pc = generate_pointcloud_from_frame(contents)
+        # Update shared state
+        _latest_3d_data["pointcloud"] = pc
+        return JSONResponse(pc)
+    except Exception as e:
+        return JSONResponse({"error": str(e), "points": []}, status_code=500)
+
+@app.get("/api/pointcloud/latest")
+async def api_pointcloud_latest():
+    """Return the most recently computed point-cloud (for polling)"""
+    return JSONResponse(_latest_3d_data["pointcloud"])
+
+@app.get("/api/emotion_heatmap")
+async def api_emotion_heatmap():
+    """
+    Return per-emotion probabilities as RGBA colour stops for the heat-map layer.
+    Colours match the application's EMOTION_COLORS palette.
+    """
+    probs = _latest_3d_data["emotion_probs"]
+    heatmap = []
+    for label in EMOTION_LABELS:
+        prob = probs.get(label, 0.0)
+        hex_col = EMOTION_COLORS.get(label, "#9e9e9e").lstrip("#")
+        r = int(hex_col[0:2], 16)
+        g = int(hex_col[2:4], 16)
+        b = int(hex_col[4:6], 16)
+        heatmap.append({
+            "emotion": label,
+            "label_fr": EMOTION_NAMES_FR.get(label, label),
+            "probability": round(prob, 4),
+            "color": EMOTION_COLORS.get(label, "#9e9e9e"),
+            "rgba": f"rgba({r},{g},{b},{min(1.0, prob * 2.5):.2f})"
+        })
+    return JSONResponse({
+        "dominant": _latest_3d_data["emotion"],
+        "confidence": _latest_3d_data["confidence"],
+        "heatmap": heatmap
+    })
+
+@app.get("/api/waveform")
+async def api_waveform():
+    """Return current audio waveform data for the 3-D viewer's waveform canvas"""
+    return JSONResponse({"points": _latest_3d_data["waveform"]})
+
+@app.get("/api/3d_status")
+async def api_3d_status():
+    """Combined status endpoint polled by the 3-D viewer at ~2 Hz"""
+    return JSONResponse({
+        "emotion": _latest_3d_data["emotion"],
+        "confidence": _latest_3d_data["confidence"],
+        "emotion_probs": _latest_3d_data["emotion_probs"],
+        "point_count": len(_latest_3d_data["pointcloud"].get("points", [])),
+        "waveform_length": len(_latest_3d_data["waveform"])
+    })
+
+
 
 if __name__ == "__main__":
+
     import uvicorn
     print("\n" + "="*60)
     print("ANALYSE EMOTIONNELLE AVANCEE - SERVEUR DEMARRE")
     print("="*60)
-    print(f"API: http://localhost:8088")
-    print(f"Dashboard: http://localhost:8088/dashboard")
-    print(f"Health: http://localhost:8088/health")
-    print(f"Model Info: http://localhost:8088/model_info")
+    print(f"API: http://localhost:8089")
+    print(f"Dashboard: http://localhost:8089/dashboard")
+    print(f"Health: http://localhost:8089/health")
+    print(f"Model Info: http://localhost:8089/model_info")
     print("="*60)
     print("\nOUVREZ DANS VOTRE NAVIGATEUR:")
-    print("   http://localhost:8088/dashboard")
-    print("   http://localhost:8088/kpi_dashboard  <-- (Nouveau !)")
+    print("   http://localhost:8089/dashboard")
+    print("   http://localhost:8089/3d_viewer")
+    print("   http://localhost:8089/kpi_dashboard")
+
     print("\nPOUR ENTRAINER LE MODELE:")
     print("   POST /train avec dataset_path")
     print("   POST /add_training_data pour ajouter des exemples")
     print("\n" + "="*60 + "\n")
 
-    uvicorn.run(app, host="0.0.0.0", port=8088, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=8089, log_level="info")
