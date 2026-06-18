@@ -37,7 +37,7 @@ from transformers import pipeline
 import imageio_ffmpeg as ffmpeg_pkg
 from moviepy.config import change_settings
 from fastapi import Form as FastAPIForm
-
+import subprocess
 # ==========================================================
 # BASE DE DONNÉES POUR LE STOCKAGE DES VIDÉOS IMPORTÉES
 # ==========================================================
@@ -1046,7 +1046,7 @@ async def add_training_data(emotion: str, image: UploadFile = File(...)):
 async def download_video_from_url(url: str, custom_filename: str = None, max_size_mb: int = 500):
     import urllib.request
     import uuid
-    import subprocess
+
 
     unique_id = str(uuid.uuid4())[:8]
     filename = f"candidate_{unique_id}.mp4"
@@ -2171,26 +2171,61 @@ async def analyze_realtime(
                      '-ar', '16000', '-ac', '1', '-f', 'wav', wav_path],
                     capture_output=True, timeout=10
                 )
-                if result.returncode == 0:
-                    import soundfile as sf
-                    y, sr = sf.read(wav_path)
-                    if len(y.shape) > 1:
-                        y = np.mean(y, axis=1)
-                        ts_result = transcriber({"sampling_rate": 16000, "raw": y})
-                        transcript = ts_result["text"]
+                # 2. Process Audio Chunk (si présent)
+                        transcript = ""
+                        audio_probs = None
+                        y = None
+                        if audio:
+                            audio_contents = await audio.read()
 
-                    if len(y) > 0:
-                       audio_inputs = audio_processor(y, sampling_rate=16000, return_tensors="pt").to(device)
-                       with torch.no_grad():
-                       logits_a = audio_model(audio_inputs['input_values'])
-                       audio_probs = F.softmax(logits_a, dim=-1).cpu().numpy()[0]
-                else:
-                    print(f"[Audio] Échec ffmpeg: {result.stderr.decode()[-200:]}")
-            except Exception as e_audio:
-                print(f"Erreur conversion audio: {e_audio}")
-            finally:
-                for p in [tmp_audio_path, wav_path]:
-                    if os.path.exists(p): os.remove(p)
+                            # Détecter l'extension selon le content-type du fichier reçu
+                            content_type = audio.content_type or ''
+                            suffix_in = '.ogg' if 'ogg' in content_type else '.webm'
+
+                            tmp_audio_path = None
+                            wav_path = None
+                            try:
+                                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix_in) as tmp_audio:
+                                    tmp_audio.write(audio_contents)
+                                    tmp_audio_path = tmp_audio.name
+
+                                wav_path = tmp_audio_path.replace(suffix_in, ".wav")
+                                conv = subprocess.run(
+                                    [FFMPEG_PATH, '-y', '-i', tmp_audio_path,
+                                     '-ar', '16000', '-ac', '1', '-f', 'wav', wav_path],
+                                    capture_output=True, timeout=15
+                                )
+
+                                if conv.returncode == 0 and os.path.exists(wav_path):
+                                    import soundfile as sf
+                                    y, sr = sf.read(wav_path)
+                                    if len(y.shape) > 1:
+                                        y = np.mean(y, axis=1)
+
+                                    if len(y) > 1600:  # au moins 0.1s de signal
+                                        # Transcription Whisper
+                                        ts_result = transcriber({"sampling_rate": 16000, "raw": y})
+                                        transcript = ts_result.get("text", "").strip()
+
+                                        # Analyse émotionnelle audio HuBERT
+                                        audio_inputs = audio_processor(
+                                            y, sampling_rate=16000, return_tensors="pt"
+                                        ).to(device)
+                                        with torch.no_grad():
+                                            logits_a = audio_model(audio_inputs['input_values'])
+                                            audio_probs = F.softmax(logits_a, dim=-1).cpu().numpy()[0]
+                                else:
+                                    print(f"[Audio] Échec ffmpeg: {conv.stderr.decode()[-200:]}")
+
+                            except Exception as e_audio:
+                                print(f"[Audio] Erreur traitement: {e_audio}")
+                            finally:
+                                for p in [tmp_audio_path, wav_path]:
+                                    if p and os.path.exists(p):
+                                        try:
+                                            os.remove(p)
+                                        except:
+                                            pass
 
         # 3. Métriques multimodales et Qualité / Fiabilité
         v_probs = None
@@ -2219,7 +2254,7 @@ async def analyze_realtime(
 
         # Télémétrie de fiabilité audio (Silence et Bruit)
         audio_status = 'Micro Inactif 🎙️'
-        if audio and 'y' in locals() and len(y) > 0:
+        if audio and y is not None and len(y) > 0:
             rms = float(np.sqrt(np.mean(y**2)))
             if rms < 0.003:
                 audio_status = 'Silence / Bruit ambiant ⏸️'
