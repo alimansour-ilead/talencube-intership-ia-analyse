@@ -2154,12 +2154,17 @@ async def analyze_realtime(
         audio_probs = None
         if audio:
             audio_contents = await audio.read()
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp_audio:
+
+            # Détecter l'extension selon le content-type du fichier reçu
+            content_type = audio.content_type or ''
+            suffix_in = '.ogg' if 'ogg' in content_type else '.webm'
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix_in) as tmp_audio:
                 tmp_audio.write(audio_contents)
                 tmp_audio_path = tmp_audio.name
-        
-            # Convertir WebM → WAV via ffmpeg avant traitement
-            wav_path = tmp_audio_path.replace(".webm", ".wav")
+
+            # Convertir WebM/OGG → WAV via ffmpeg avant traitement
+            wav_path = tmp_audio_path.replace(suffix_in, ".wav")
             try:
                 result = subprocess.run(
                     [FFMPEG_PATH, '-y', '-i', tmp_audio_path,
@@ -2169,7 +2174,18 @@ async def analyze_realtime(
                 if result.returncode == 0:
                     import soundfile as sf
                     y, sr = sf.read(wav_path)
-                    # ... reste du traitement audio existant
+                    if len(y.shape) > 1:
+                        y = np.mean(y, axis=1)
+                        ts_result = transcriber({"sampling_rate": 16000, "raw": y})
+                        transcript = ts_result["text"]
+
+                    if len(y) > 0:
+                       audio_inputs = audio_processor(y, sampling_rate=16000, return_tensors="pt").to(device)
+                       with torch.no_grad():
+                       logits_a = audio_model(audio_inputs['input_values'])
+                       audio_probs = F.softmax(logits_a, dim=-1).cpu().numpy()[0]
+                else:
+                    print(f"[Audio] Échec ffmpeg: {result.stderr.decode()[-200:]}")
             except Exception as e_audio:
                 print(f"Erreur conversion audio: {e_audio}")
             finally:
