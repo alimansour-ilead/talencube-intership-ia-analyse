@@ -1,6 +1,6 @@
 # app.py - Analyse motionnelle avec Fine-tuning et entranement
 from fastapi import FastAPI, File, UploadFile, BackgroundTasks, Form
-from fastapi.responses import  JSONResponse,  Response
+from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Optional
@@ -74,6 +74,7 @@ engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+
 class VideoRecord(Base):
     __tablename__ = "videos"
 
@@ -84,8 +85,10 @@ class VideoRecord(Base):
     created_at = Column(DateTime, default=datetime.now)
     analysis_result = Column(Text, nullable=True)
 
+
 # Créer les tables
 Base.metadata.create_all(bind=engine)
+
 
 # Modèle Pydantic pour les requêtes URL
 class VideoURLRequest(BaseModel):
@@ -95,13 +98,15 @@ class VideoURLRequest(BaseModel):
     skip_face_detection: Optional[bool] = False
     public_id: Optional[str] = None
 
-print("="*60)
+
+print("=" * 60)
 print("INITIALISATION DES MODELES D'ANALYSE EMOTIONNELLE")
-print("="*60)
+print("=" * 60)
 
 # Device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Device: {device}")
+
 
 # ==========================================================
 # CONFIGURATION
@@ -124,9 +129,11 @@ class Config:
         'happy': 0.1
     }
 
+
 # Crer les rpertoires ncessaires
 Path("models").mkdir(exist_ok=True)
 Path("data").mkdir(exist_ok=True)
+
 
 # ==========================================================
 # MODLE AMLIOR AVEC FINE-TUNING
@@ -147,6 +154,7 @@ class EnhancedEmotionModel(nn.Module):
         outputs = self.base_model(pixel_values, output_hidden_states=True)
         # Return CLS token of the last hidden layer [batch, 768]
         return outputs.hidden_states[-1][:, 0, :]
+
 
 class EmotionDataset(Dataset):
     """Dataset pour l'entranement personnalis"""
@@ -192,6 +200,7 @@ class EmotionDataset(Dataset):
             'labels': torch.tensor(item['label'], dtype=torch.long)
         }
 
+
 # ==========================================================
 # INITIALISATION DES MODLES
 # ==========================================================
@@ -219,6 +228,7 @@ if not os.path.exists("yolov8n-face.pt"):
     print("yolov8n-face.pt non trouvé. Téléchargement automatique depuis Hugging Face...")
     try:
         import urllib.request
+
         url = "https://huggingface.co/Bingsu/adetailer/resolve/main/face_yolov8n.pt"
         req = urllib.request.Request(
             url,
@@ -250,13 +260,15 @@ fusion_model.eval()
 
 # Modèle de Transcription (Whisper Tiny pour plus de rapidité sur CPU)
 print("Chargement du modèle Whisper Tiny pour la transcription rapide...")
-transcriber = pipeline("automatic-speech-recognition", model="openai/whisper-tiny", device=device, chunk_length_s=30, generate_kwargs={"language": "french"})
+transcriber = pipeline("automatic-speech-recognition", model="openai/whisper-tiny", device=device, chunk_length_s=30,
+                       generate_kwargs={"language": "french"})
 print("Whisper Tiny chargé")
 
 # ==========================================================
 # INITIALISATION D'ONNX RUNTIME (ACCÉLÉRATION VITESSE x6)
 # ==========================================================
 import onnxruntime as ort
+
 print("Chargement des sessions optimisées ONNX Runtime...")
 try:
     vit_session = ort.InferenceSession("models/vit_emotion.onnx", providers=['CPUExecutionProvider'])
@@ -283,6 +295,7 @@ EMOTION_COLORS = {
     'sad': '#2196f3', 'disgust': '#795548', 'angry': '#f44336',
     'neutral': '#9e9e9e', 'fear': '#9c27b0', 'surprise': '#ff9800', 'happy': '#4caf50'
 }
+
 
 # Historique des analyses
 class AnalysisHistory:
@@ -312,11 +325,13 @@ class AnalysisHistory:
             'last_analysis': self.history[-1]['timestamp'] if self.history else None
         }
 
+
 history_manager = AnalysisHistory()
 
-print("="*60)
+print("=" * 60)
 print("TOUS LES MODELES SONT PRETS!")
-print("="*60)
+print("=" * 60)
+
 
 # ==========================================================
 # FONCTIONS D'ANALYSE AMLIORES
@@ -346,9 +361,9 @@ def detect_faces(frame):
                     pad_w = int(w * 0.40)
                     pad_h = int(h * 0.40)
                     x1_p = max(0, x1 - pad_w)
-                    y1_p = max(0, y1 - int(pad_h * 1.2)) # Front
+                    y1_p = max(0, y1 - int(pad_h * 1.2))  # Front
                     x2_p = min(img_w, x2 + pad_w)
-                    y2_p = min(img_h, y2 + int(pad_h * 1.5)) # Bouche & Menton
+                    y2_p = min(img_h, y2 + int(pad_h * 1.5))  # Bouche & Menton
 
                     face_img = frame[y1_p:y2_p, x1_p:x2_p]
                     if face_img.size > 0:
@@ -363,7 +378,7 @@ def detect_faces(frame):
 
                             if len(detected_faces) > 0:
                                 # Prendre le plus grand visage trouvé dans le corps
-                                detected_faces = sorted(detected_faces, key=lambda x: x[2]*x[3], reverse=True)
+                                detected_faces = sorted(detected_faces, key=lambda x: x[2] * x[3], reverse=True)
                                 (fx, fy, fw, fh) = detected_faces[0]
 
                                 pad_w = int(fw * 0.40)
@@ -398,24 +413,27 @@ def detect_faces(frame):
 
     return faces
 
+
 def preprocess_face(face):
     """Prparation de l'image pour le processeur ViT"""
     # AutoImageProcessor (base_processor) gère déjà le redimensionnement et la normalisation de manière optimale.
     # On retourne simplement le visage recadré sans modification manuelle.
     return face
 
+
 # SEUILS DYNAMIQUES SPÉCIFIQUES AUX ÉMOTIONS (ULTRA-CALIBRÉS)
 # Élimine à 100% les fausses alertes d'émotions négatives (colère, tristesse, peur) dues au visage sérieux (resting face)
 # tout en garantissant un déclenchement instantané et ultra-sensible des émotions positives (joie, surprise)
 EMOTION_THRESHOLDS = {
-    'happy': 0.16,      # Ultra-sensible : Capte immédiatement tous les sourires du candidat
-    'surprise': 0.16,   # Ultra-sensible : Capte les expressions d'étonnement rapides
-    'sad': 0.30,        # Très sécurisé : Élimine totalement les fausses alertes de tristesse sur visage sérieux
-    'angry': 0.32,      # Ultra-sécurisé : Évite absolument d'accuser à tort un candidat concentré de colère
-    'fear': 0.30,       # Très sécurisé : Bloque les faux positifs de peur/stress lors de la réflexion
-    'disgust': 0.35,    # Maximum de sécurité pour cette émotion extrême
-    'neutral': 0.0      # Pas de seuil pour la neutralité naturelle
+    'happy': 0.16,  # Ultra-sensible : Capte immédiatement tous les sourires du candidat
+    'surprise': 0.16,  # Ultra-sensible : Capte les expressions d'étonnement rapides
+    'sad': 0.30,  # Très sécurisé : Élimine totalement les fausses alertes de tristesse sur visage sérieux
+    'angry': 0.32,  # Ultra-sécurisé : Évite absolument d'accuser à tort un candidat concentré de colère
+    'fear': 0.30,  # Très sécurisé : Bloque les faux positifs de peur/stress lors de la réflexion
+    'disgust': 0.35,  # Maximum de sécurité pour cette émotion extrême
+    'neutral': 0.0  # Pas de seuil pour la neutralité naturelle
 }
+
 
 def calibrate_and_smooth_probs(probs, prev_probs=None):
     """Applique le filtrage de bruit de fond, le lissage adaptatif dynamique et la calibration (100% thread-safe)"""
@@ -425,7 +443,7 @@ def calibrate_and_smooth_probs(probs, prev_probs=None):
     if np.sum(probs) > 0:
         probs = probs / np.sum(probs)
     else:
-        probs = np.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]) # Fallback neutral
+        probs = np.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])  # Fallback neutral
 
     # 2. CALIBRATION DE TEMPÉRATURE (0.85 = booste la netteté et la confiance naturelle)
     temperature = 0.85
@@ -462,6 +480,7 @@ def calibrate_and_smooth_probs(probs, prev_probs=None):
 
     return emotion, confidence, calibrated_probs, smoothed_probs
 
+
 def calibrate_single_frame(probs):
     """Calibre une frame unique pour le temps réel (webcam) sans introduire d'inertie temporelle globale polluante"""
     # 1. FILTRAGE DU BRUIT DE FOND (Zero-Noise Floor)
@@ -491,6 +510,7 @@ def calibrate_single_frame(probs):
         emotion = candidate_emotion
 
     return emotion, confidence, calibrated_probs
+
 
 def predict_emotion_enhanced(face, reset_session=False):
     """Prédiction d'émotion améliorée avec ensemble learning (et ONNX si activé)"""
@@ -522,6 +542,7 @@ def predict_emotion_enhanced(face, reset_session=False):
         print(f"Erreur prédiction: {e}")
         return "neutral", 0.5, [("neutral", 0.5)]
 
+
 def calculate_deception_risk(emotion_history, confidence_history, frame_times):
     """Calcul avancé du risque de tromperie et d'anxiété avec une meilleure sensibilité"""
 
@@ -537,7 +558,7 @@ def calculate_deception_risk(emotion_history, confidence_history, frame_times):
     emotion_score = min(100.0, (deception_count / total_frames) * 333.3)
 
     # 2. Variabilité émotionnelle (instabilité)
-    changes = sum(1 for i in range(1, total_frames) if emotion_history[i] != emotion_history[i-1])
+    changes = sum(1 for i in range(1, total_frames) if emotion_history[i] != emotion_history[i - 1])
     # Sensibilité : si l'émotion change dans 20% des frames, on est à 100% d'instabilité
     variability_score = min(100.0, (changes / total_frames) * 500.0)
 
@@ -545,7 +566,7 @@ def calculate_deception_risk(emotion_history, confidence_history, frame_times):
     micro_expressions = 0
     for i in range(2, total_frames):
         # Si on revient à l'émotion initiale après 1 frame (flash d'émotion)
-        if emotion_history[i] == emotion_history[i-2] and emotion_history[i] != emotion_history[i-1]:
+        if emotion_history[i] == emotion_history[i - 2] and emotion_history[i] != emotion_history[i - 1]:
             micro_expressions += 1
     micro_score = min(100.0, (micro_expressions / max(1, total_frames)) * 1000.0)
 
@@ -573,11 +594,11 @@ def calculate_deception_risk(emotion_history, confidence_history, frame_times):
     }
 
     total_score = (
-        emotion_score * weights['emotion'] +
-        variability_score * weights['variability'] +
-        micro_score * weights['micro'] +
-        confidence_score * weights['confidence'] +
-        pattern_score * weights['pattern']
+            emotion_score * weights['emotion'] +
+            variability_score * weights['variability'] +
+            micro_score * weights['micro'] +
+            confidence_score * weights['confidence'] +
+            pattern_score * weights['pattern']
     )
 
     # Dtails pour le rapport
@@ -600,8 +621,10 @@ def calculate_deception_risk(emotion_history, confidence_history, frame_times):
 
     return total_score, level, details
 
+
 def calculate_candidate_metrics(visual_probs, audio_probs=None, audio_energy=None, history=None):
-    def sigmoid(x): return 1 / (1 + np.exp(-x))
+    def sigmoid(x):
+        return 1 / (1 + np.exp(-x))
 
     if visual_probs is None:
         visual_probs = np.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])  # Neutre par défaut
@@ -610,9 +633,9 @@ def calculate_candidate_metrics(visual_probs, audio_probs=None, audio_energy=Non
 
     # Stress Management
     r_stress = (
-        visual_probs[v_fea] * 1.5 +
-        visual_probs[v_ang] * 1.0 +
-        visual_probs[v_sad] * 0.8
+            visual_probs[v_fea] * 1.5 +
+            visual_probs[v_ang] * 1.0 +
+            visual_probs[v_sad] * 0.8
     )
     if audio_probs is not None and len(audio_probs) == 4:
         r_stress += (audio_probs[3] * 1.2 + audio_probs[2] * 0.8)
@@ -621,8 +644,8 @@ def calculate_candidate_metrics(visual_probs, audio_probs=None, audio_energy=Non
 
     # Communication
     r_comm = (
-        visual_probs[v_neu] * 0.5 +
-        visual_probs[v_hap] * 1.0
+            visual_probs[v_neu] * 0.5 +
+            visual_probs[v_hap] * 1.0
     )
     if audio_probs is not None and len(audio_probs) == 4:
         r_comm += (audio_probs[0] * 0.5 + audio_probs[1] * 1.0)
@@ -635,18 +658,18 @@ def calculate_candidate_metrics(visual_probs, audio_probs=None, audio_energy=Non
 
     # Assurance Level
     raw_assur = (
-        visual_probs[v_neu] * 0.8 +
-        visual_probs[v_hap] * 1.2
-    ) - (
-        visual_probs[v_fea] * 1.0 +
-        visual_probs[v_sad] * 0.5
-    )
+                        visual_probs[v_neu] * 0.8 +
+                        visual_probs[v_hap] * 1.2
+                ) - (
+                        visual_probs[v_fea] * 1.0 +
+                        visual_probs[v_sad] * 0.5
+                )
 
     if audio_probs is not None and len(audio_probs) == 4:
         raw_assur += (
-            audio_probs[0] * 0.8 +
-            audio_probs[1] * 1.2 -
-            audio_probs[2] * 0.5
+                audio_probs[0] * 0.8 +
+                audio_probs[1] * 1.2 -
+                audio_probs[2] * 0.5
         )
 
     assurance = sigmoid(raw_assur * 2.5) * 100
@@ -658,11 +681,11 @@ def calculate_candidate_metrics(visual_probs, audio_probs=None, audio_energy=Non
     # GLOBAL HIRING SCORE
     # =========================
     global_score = (
-        assurance * 0.30 +
-        communication * 0.25 +
-        stress_management * 0.25 +
-        expressivity * 0.10 +
-        confidence_score * 100 * 0.10
+            assurance * 0.30 +
+            communication * 0.25 +
+            stress_management * 0.25 +
+            expressivity * 0.10 +
+            confidence_score * 100 * 0.10
     )
 
     global_score = max(0, min(100, global_score))
@@ -676,6 +699,7 @@ def calculate_candidate_metrics(visual_probs, audio_probs=None, audio_energy=Non
         'confidence_score': float(max(0, min(100, confidence_score * 100))),
         'global_score': float(global_score)
     }
+
 
 def analyze_soft_skills(transcript, metrics):
     """Analyse les compétences comportementales à partir du texte et des métriques"""
@@ -707,14 +731,17 @@ def analyze_soft_skills(transcript, metrics):
 
     return skills
 
+
 def analyze_speech_deception(transcript):
     """Analyse le discours pour detecter les hesitations et sur-justifications (mensonge)"""
     if not transcript:
         return 0.0, []
 
     t_lower = transcript.lower()
-    hesitation_words = ["euh", "bah", "en fait", "je crois", "peut-être", "genre", "comment dire", "je ne sais pas", "enfin"]
-    over_justification = ["honnêtement", "pour être franc", "à vrai dire", "croyez-moi", "sincèrement", "je vous jure", "en toute franchise", "absolument"]
+    hesitation_words = ["euh", "bah", "en fait", "je crois", "peut-être", "genre", "comment dire", "je ne sais pas",
+                        "enfin"]
+    over_justification = ["honnêtement", "pour être franc", "à vrai dire", "croyez-moi", "sincèrement", "je vous jure",
+                          "en toute franchise", "absolument"]
 
     hesitations = sum(t_lower.count(w) for w in hesitation_words)
     justifications = sum(t_lower.count(w) for w in over_justification)
@@ -731,16 +758,19 @@ def analyze_speech_deception(transcript):
         # Score dynamique progressif
         added_risk = min(50.0, (hesitation_ratio / 0.05) * 50.0)
         risk_score += added_risk
-        flags.append(f"Hésitations fréquentes ({hesitations} détectées), indicateur d'incertitude ou de construction de récit.")
+        flags.append(
+            f"Hésitations fréquentes ({hesitations} détectées), indicateur d'incertitude ou de construction de récit.")
 
     justification_ratio = justifications / word_count
     # Seuil abaissé à 0.5%
     if justification_ratio > 0.005:
         added_risk = min(50.0, (justification_ratio / 0.02) * 50.0)
         risk_score += added_risk
-        flags.append(f"Sur-justification verbale ({justifications} détectées), souvent corrélée à un besoin de convaincre excessif.")
+        flags.append(
+            f"Sur-justification verbale ({justifications} détectées), souvent corrélée à un besoin de convaincre excessif.")
 
     return min(100.0, risk_score), flags
+
 
 def detect_inconsistencies(transcript, history):
     """Détecte les décalages entre le discours et l'émotion"""
@@ -753,12 +783,13 @@ def detect_inconsistencies(transcript, history):
 
     # Si bcp de mots positifs mais émotion dominante triste/peur
     if history and has_positive_speech:
-        avg_fear = np.mean([h[4] for h in history]) # fear:4
-        avg_sad = np.mean([h[0] for h in history]) # sad:0
+        avg_fear = np.mean([h[4] for h in history])  # fear:4
+        avg_sad = np.mean([h[0] for h in history])  # sad:0
         if avg_fear > 0.3 or avg_sad > 0.3:
             inconsistencies.append("Décalage détecté : Discours positif mais expressions faciales anxieuses.")
 
     return inconsistencies
+
 
 # ==========================================================
 # APIS D'ENTRANEMENT
@@ -768,6 +799,7 @@ class TrainingRequest(BaseModel):
     num_epochs: Optional[int] = 10
     batch_size: Optional[int] = 32
     learning_rate: Optional[float] = 2e-5
+
 
 @app.post("/train")
 async def train_model(request: TrainingRequest, background_tasks: BackgroundTasks):
@@ -780,6 +812,7 @@ async def train_model(request: TrainingRequest, background_tasks: BackgroundTask
         request.learning_rate
     )
     return {"message": "Entranement dmarr en arrire-plan", "status": "training"}
+
 
 async def perform_training(dataset_path, num_epochs, batch_size, learning_rate):
     """Excute l'entranement du modle"""
@@ -825,7 +858,8 @@ async def perform_training(dataset_path, num_epochs, batch_size, learning_rate):
             scheduler.step()
             accuracy = 100. * correct / total
 
-            print(f"Epoch {epoch+1}/{num_epochs} - Loss: {total_loss/len(train_loader):.4f}, Accuracy: {accuracy:.2f}%")
+            print(
+                f"Epoch {epoch + 1}/{num_epochs} - Loss: {total_loss / len(train_loader):.4f}, Accuracy: {accuracy:.2f}%")
 
         # Sauvegarder le modle
         torch.save(model.state_dict(), Config.MODEL_PATH)
@@ -835,6 +869,7 @@ async def perform_training(dataset_path, num_epochs, batch_size, learning_rate):
 
     except Exception as e:
         print(f"Erreur pendant l'entrainement: {e}")
+
 
 @app.post("/evaluate")
 async def evaluate_model(dataset_path: str):
@@ -877,7 +912,8 @@ async def evaluate_model(dataset_path: str):
         latency_ms = (total_time / num_samples) * 1000 if num_samples > 0 else 0
 
         # KPIs avec scikit-learn
-        report = classification_report(all_labels, all_preds, target_names=EMOTION_LABELS, output_dict=True, zero_division=0)
+        report = classification_report(all_labels, all_preds, target_names=EMOTION_LABELS, output_dict=True,
+                                       zero_division=0)
         cm = confusion_matrix(all_labels, all_preds).tolist()
 
         kpi_results = {
@@ -900,6 +936,7 @@ async def evaluate_model(dataset_path: str):
 
     except Exception as e:
         return JSONResponse({'error': str(e)}, status_code=500)
+
 
 @app.post("/evaluate_videos")
 async def evaluate_videos(dataset_path: str):
@@ -984,7 +1021,8 @@ async def evaluate_videos(dataset_path: str):
         cm = []
         if true_labels:
             from sklearn.metrics import accuracy_score
-            report = classification_report(true_labels, predicted_labels, labels=EMOTION_LABELS, output_dict=True, zero_division=0)
+            report = classification_report(true_labels, predicted_labels, labels=EMOTION_LABELS, output_dict=True,
+                                           zero_division=0)
             accuracy = accuracy_score(true_labels, predicted_labels)
             f1_score = report.get('macro avg', {}).get('f1-score', 0)
             cm = confusion_matrix(true_labels, predicted_labels, labels=EMOTION_LABELS).tolist()
@@ -1013,6 +1051,7 @@ async def evaluate_videos(dataset_path: str):
         print(traceback.format_exc())
         return JSONResponse({'error': str(e)}, status_code=500)
 
+
 @app.post("/add_training_data")
 async def add_training_data(emotion: str, image: UploadFile = File(...)):
     """Ajoute des donnes d'entranement personnalises"""
@@ -1040,13 +1079,13 @@ async def add_training_data(emotion: str, image: UploadFile = File(...)):
     except Exception as e:
         return JSONResponse({'error': str(e)}, status_code=500)
 
+
 # ==========================================================
 # FONCTION POUR TÉLÉCHARGER UNE VIDÉO DEPUIS UNE URL
 # ==========================================================
 async def download_video_from_url(url: str, custom_filename: str = None, max_size_mb: int = 500):
     import urllib.request
     import uuid
-
 
     unique_id = str(uuid.uuid4())[:8]
     filename = f"candidate_{unique_id}.mp4"
@@ -1093,6 +1132,7 @@ async def download_video_from_url(url: str, custom_filename: str = None, max_siz
                 os.remove(p)
         raise Exception(f"Erreur téléchargement: {str(e)}")
 
+
 # ==========================================================
 # ENDPOINTS API
 # ==========================================================
@@ -1103,20 +1143,21 @@ async def root():
         "version": "2.0.0",
         "status": "online",
         "endpoints": {
-            "health":                   "GET  /health",
-            "model_info":               "GET  /model_info",
-            "analyze_realtime":         "POST /analyze_realtime",
-            "analyze_video":            "POST /analyze_video",
-            "analyze_video_url":        "POST /analyze_video_url",
-            "import_video_from_url":    "POST /import_video_from_url",
-            "analyze_imported_video":   "POST /analyze_imported_video",
-            "extract_candidates":       "POST /extract_candidates_preview",
-            "export_pdf":               "POST /export_pdf",
-            "chatbot":                  "POST /chatbot",
-            "train":                    "POST /train",
-            "evaluate":                 "POST /evaluate",
+            "health": "GET  /health",
+            "model_info": "GET  /model_info",
+            "analyze_realtime": "POST /analyze_realtime",
+            "analyze_video": "POST /analyze_video",
+            "analyze_video_url": "POST /analyze_video_url",
+            "import_video_from_url": "POST /import_video_from_url",
+            "analyze_imported_video": "POST /analyze_imported_video",
+            "extract_candidates": "POST /extract_candidates_preview",
+            "export_pdf": "POST /export_pdf",
+            "chatbot": "POST /chatbot",
+            "train": "POST /train",
+            "evaluate": "POST /evaluate",
         }
     }
+
 
 @app.get("/health")
 async def health():
@@ -1130,6 +1171,7 @@ async def health():
         "training_status": "available",
         "history": history_manager.get_stats()
     }
+
 
 @app.get("/model_info")
 async def model_info():
@@ -1153,7 +1195,7 @@ async def export_pdf(data: dict):
         class PDFReport(FPDF):
             def header(self):
                 # Bannière supérieure
-                self.set_fill_color(15, 23, 42) # Slate 900
+                self.set_fill_color(15, 23, 42)  # Slate 900
                 self.rect(0, 0, 210, 35, 'F')
 
                 # Ligne d'accentuation cyan
@@ -1165,7 +1207,7 @@ async def export_pdf(data: dict):
                 self.set_text_color(255, 255, 255)
                 self.cell(0, 10, "NEXUM IA - ANALYSE D'ENTRETIEN", ln=True, align='C')
                 self.set_font("Helvetica", 'I', 10)
-                self.set_text_color(148, 163, 184) # Slate 400
+                self.set_text_color(148, 163, 184)  # Slate 400
                 self.cell(0, 5, "Analyse Multimodale & Profilage Cognitif", ln=True, align='C')
                 self.ln(20)
 
@@ -1198,10 +1240,11 @@ async def export_pdf(data: dict):
         pdf.ln(2)
 
         m = data.get('metrics', {})
+
         # Création de "cartes" pour les métriques
         def draw_metric_card(x, y, title, value):
-            pdf.set_fill_color(248, 250, 252) # Slate 50
-            pdf.set_draw_color(226, 232, 240) # Slate 200
+            pdf.set_fill_color(248, 250, 252)  # Slate 50
+            pdf.set_draw_color(226, 232, 240)  # Slate 200
             pdf.rect(x, y, 85, 20, 'FD')
 
             pdf.set_xy(x + 5, y + 4)
@@ -1221,7 +1264,6 @@ async def export_pdf(data: dict):
         draw_metric_card(15, current_y + 50, "Risque de Mensonge", data.get('analysis', {}).get('score', 0))
 
         pdf.set_y(current_y + 80)  # Adjust for added risk card
-
 
         # 2. VERDICT DE L'IA
         pdf.set_font("Helvetica", 'B', 12)
@@ -1248,7 +1290,7 @@ async def export_pdf(data: dict):
             pdf.cell(0, 8, "Timeline Chronologique des Anomalies (Suspicion de mensonge) :", ln=True)
             pdf.ln(2)
 
-            for item in dec_timeline[:8]: # Limiter à 8 items max pour ne pas dépasser la page
+            for item in dec_timeline[:8]:  # Limiter à 8 items max pour ne pas dépasser la page
                 t_val = item.get('time', 0.0)
                 type_val = item.get('type', '').encode('latin-1', 'replace').decode('latin-1')
                 desc_val = item.get('description', '').encode('latin-1', 'replace').decode('latin-1')
@@ -1256,11 +1298,11 @@ async def export_pdf(data: dict):
 
                 pdf.set_font("Helvetica", 'B', 9)
                 if sev_val == "Élevée":
-                    pdf.set_text_color(220, 38, 38) # Red 600
+                    pdf.set_text_color(220, 38, 38)  # Red 600
                 elif sev_val == "Moyenne":
-                    pdf.set_text_color(217, 119, 6) # Amber 600
+                    pdf.set_text_color(217, 119, 6)  # Amber 600
                 else:
-                    pdf.set_text_color(71, 85, 105) # Slate 600
+                    pdf.set_text_color(71, 85, 105)  # Slate 600
                 pdf.cell(35, 5, f"[{t_val:.1f}s] - {type_val} : ", ln=0)
 
                 pdf.set_font("Helvetica", '', 9)
@@ -1286,7 +1328,7 @@ async def export_pdf(data: dict):
 
         if chunks:
             # Format horodaté
-            max_chunks = 40 # Limite pour éviter un PDF trop long
+            max_chunks = 40  # Limite pour éviter un PDF trop long
             for idx, chunk in enumerate(chunks[:max_chunks]):
                 try:
                     start_time = chunk.get('timestamp', [0])[0]
@@ -1327,6 +1369,7 @@ async def export_pdf(data: dict):
     except Exception as e:
         print(f"Erreur PDF: {e}")
         return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
+
 
 @app.post("/extract_candidates_preview")
 async def extract_candidates_preview(file: UploadFile = File(...)):
@@ -1421,6 +1464,7 @@ async def extract_candidates_preview(file: UploadFile = File(...)):
         traceback.print_exc()
         return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
 
+
 @app.post("/analyze_video_from_url")
 async def analyze_video_from_url(request: VideoURLRequest):
     temp_path = None
@@ -1435,6 +1479,7 @@ async def analyze_video_from_url(request: VideoURLRequest):
             def __init__(self, path, name):
                 self.filename = name
                 self._path = path
+
             async def read(self):
                 with open(self._path, 'rb') as f:
                     return f.read()
@@ -1464,11 +1509,12 @@ async def analyze_video_from_url(request: VideoURLRequest):
             'details': error_details
         }, status_code=500)
 
+
 @app.post("/analyze_video")
 async def analyze_video(
-    file: UploadFile = File(...),
-    target_x: Optional[float] = Form(None),
-    target_y: Optional[float] = Form(None)
+        file: UploadFile = File(...),
+        target_x: Optional[float] = Form(None),
+        target_y: Optional[float] = Form(None)
 ):
     """Analyse multimodale complte d'une vido (Visuel + Audio)"""
     import time
@@ -1532,7 +1578,7 @@ async def analyze_video(
         prev_probs = None
 
         # On analyse un chantillon de frames pour la performance
-        sample_rate = 1.0 # 1 frame par seconde
+        sample_rate = 1.0  # 1 frame par seconde
 
         # -------------------------------------------------
         # Extract preview faces from the first 10 seconds
@@ -1577,7 +1623,7 @@ async def analyze_video(
                     for f_img, f_conf, tight_bbox, padded_bbox in faces:
                         cx = (tight_bbox[0] + tight_bbox[2]) / 2
                         cy = (tight_bbox[1] + tight_bbox[3]) / 2
-                        dist = np.sqrt((cx - last_cx)**2 + (cy - last_cy)**2)
+                        dist = np.sqrt((cx - last_cx) ** 2 + (cy - last_cy) ** 2)
 
                         if dist < best_dist:
                             best_dist = dist
@@ -1590,7 +1636,7 @@ async def analyze_video(
                         last_cy = (tight_bbox[1] + tight_bbox[3]) / 2
                 else:
                     # Par défaut, on prend le plus grand visage (candidat principal)
-                    selected_face = max(faces, key=lambda x: (x[2][2]-x[2][0]) * (x[2][3]-x[2][1]))
+                    selected_face = max(faces, key=lambda x: (x[2][2] - x[2][0]) * (x[2][3] - x[2][1]))
                     last_cx = (selected_face[2][0] + selected_face[2][2]) / 2
                     last_cy = (selected_face[2][1] + selected_face[2][3]) / 2
 
@@ -1631,7 +1677,8 @@ async def analyze_video(
                         if USE_ONNX:
                             input_values_np = seg_inputs['input_values'].cpu().numpy()
                             # Inférence Audio avec HuBERT en ONNX
-                            hubert_logits, hubert_features_np = hubert_session.run(None, {"input_values": input_values_np})
+                            hubert_logits, hubert_features_np = hubert_session.run(None,
+                                                                                   {"input_values": input_values_np})
                             audio_probs_numpy = F.softmax(torch.tensor(hubert_logits), dim=-1).numpy()[0]
                         else:
                             with torch.no_grad():
@@ -1665,7 +1712,8 @@ async def analyze_video(
                         fusion_weights_list = [visual_weight, audio_weight]
 
                 # Appliquer la calibration, l'EMA local et l'anti-biais sur le résultat (visuel ou fusion)
-                emotion, conf_score, calibrated_probs, prev_probs = calibrate_and_smooth_probs(final_raw_probs, prev_probs=prev_probs)
+                emotion, conf_score, calibrated_probs, prev_probs = calibrate_and_smooth_probs(final_raw_probs,
+                                                                                               prev_probs=prev_probs)
                 visual_history.append(calibrated_probs)
 
                 # Calcul des métriques candidat
@@ -1732,7 +1780,9 @@ async def analyze_video(
         print("Analyse terminée avec succès")
 
         # Calcul du score de tromperie (visuel + audio)
-        vis_risk_score, vis_risk_level, vis_risk_details = calculate_deception_risk([f['emotion'] for f in frames_results], [f['confidence'] for f in frames_results], [f['timestamp'] for f in frames_results])
+        vis_risk_score, vis_risk_level, vis_risk_details = calculate_deception_risk(
+            [f['emotion'] for f in frames_results], [f['confidence'] for f in frames_results],
+            [f['timestamp'] for f in frames_results])
         speech_risk_score, speech_flags = analyze_speech_deception(transcript_text)
 
         final_score = (vis_risk_score * 0.6) + (speech_risk_score * 0.4)
@@ -1769,7 +1819,8 @@ async def analyze_video(
             })
 
         if not ai_feedback:
-            ai_feedback.append({"timestamp": 0, "reason": "Vue d'ensemble", "feedback": "Comportement globalement stable."})
+            ai_feedback.append(
+                {"timestamp": 0, "reason": "Vue d'ensemble", "feedback": "Comportement globalement stable."})
 
         # Calcul des KPIs système sur cette vidéo
         processing_time = time.time() - start_time
@@ -1815,12 +1866,12 @@ async def analyze_video(
                     "time": float(t),
                     "type": "Stress Émotionnel",
                     "severity": "Élevée" if conf > 0.75 else "Moyenne",
-                    "description": f"Pic de tension détecté ({EMOTION_NAMES_FR.get(emotion, emotion)}) avec {int(conf*100)}% de confiance."
+                    "description": f"Pic de tension détecté ({EMOTION_NAMES_FR.get(emotion, emotion)}) avec {int(conf * 100)}% de confiance."
                 })
 
             # Détection de micro-expression (changement soudain d'émotion en 1 seconde)
-            if idx >= 1 and frames_results[idx]['emotion'] != frames_results[idx-1]['emotion']:
-                prev_e = frames_results[idx-1]['emotion']
+            if idx >= 1 and frames_results[idx]['emotion'] != frames_results[idx - 1]['emotion']:
+                prev_e = frames_results[idx - 1]['emotion']
                 curr_e = frames_results[idx]['emotion']
                 if prev_e != 'neutral' and curr_e != 'neutral':
                     deception_timeline.append({
@@ -1835,8 +1886,10 @@ async def analyze_video(
             text = chunk.get('text', '').lower()
             start_t = chunk.get('timestamp', [0])[0]
 
-            hesitation_words = ["euh", "bah", "en fait", "je crois", "peut-être", "genre", "comment dire", "je ne sais pas"]
-            over_justification = ["honnêtement", "pour être franc", "à vrai dire", "croyez-moi", "sincèrement", "je vous jure"]
+            hesitation_words = ["euh", "bah", "en fait", "je crois", "peut-être", "genre", "comment dire",
+                                "je ne sais pas"]
+            over_justification = ["honnêtement", "pour être franc", "à vrai dire", "croyez-moi", "sincèrement",
+                                  "je vous jure"]
 
             found_hesitations = [w for w in hesitation_words if w in text]
             found_justifications = [w for w in over_justification if w in text]
@@ -1918,15 +1971,16 @@ async def analyze_video(
                 )
             ]
         }
-# Duplicate response payload block removed
+        # Duplicate response payload block removed
 
-# Duplicate response payload block removed
+        # Duplicate response payload block removed
 
         return JSONResponse(to_serializable(response_payload))
 
     except Exception as e:
         print(f"Erreur Analyse Video: {e}")
         return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
+
 
 @app.post("/chatbot")
 async def chatbot_interaction(data: dict):
@@ -1991,12 +2045,14 @@ async def chatbot_interaction(data: dict):
 
     return {"response": response}
 
+
 @app.post("/analyze")
 async def analyze_frame(frame: Optional[UploadFile] = File(None), video: Optional[UploadFile] = File(None)):
     """Analyse amliore d'une frame vido (accepte plusieurs noms de champs)"""
     file = frame or video
     if not file:
-        return JSONResponse({'success': False, 'error': 'Aucun fichier reu (champs attendus: frame ou video)'}, status_code=400)
+        return JSONResponse({'success': False, 'error': 'Aucun fichier reu (champs attendus: frame ou video)'},
+                            status_code=400)
 
     try:
         contents = await file.read()
@@ -2025,7 +2081,8 @@ async def analyze_frame(frame: Optional[UploadFile] = File(None), video: Optiona
             att_weight = float(det_conf)
 
             # Obtenir les probabilités pour les métriques
-            inputs_v = base_processor(images=cv2.cvtColor(preprocess_face(face), cv2.COLOR_BGR2RGB), return_tensors="pt").to(device)
+            inputs_v = base_processor(images=cv2.cvtColor(preprocess_face(face), cv2.COLOR_BGR2RGB),
+                                      return_tensors="pt").to(device)
             with torch.no_grad():
                 logits_v = model(inputs_v['pixel_values'])
                 v_probs = F.softmax(logits_v, dim=-1).cpu().numpy()[0]
@@ -2058,6 +2115,7 @@ async def analyze_frame(frame: Optional[UploadFile] = File(None), video: Optiona
         print(f"Erreur: {e}")
         return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
 
+
 @app.post("/analyze_sequence")
 async def analyze_sequence(frames: List[UploadFile]):
     """Analyse d'une squence de frames pour dtection de micro-expressions"""
@@ -2080,10 +2138,10 @@ async def analyze_sequence(frames: List[UploadFile]):
         # Dtection des micro-expressions
         micro_expressions = []
         for i in range(1, len(sequence_results)):
-            if sequence_results[i] != sequence_results[i-1]:
+            if sequence_results[i] != sequence_results[i - 1]:
                 micro_expressions.append({
                     'time': timestamps[i],
-                    'from': sequence_results[i-1],
+                    'from': sequence_results[i - 1],
                     'to': sequence_results[i]
                 })
 
@@ -2098,13 +2156,14 @@ async def analyze_sequence(frames: List[UploadFile]):
     except Exception as e:
         return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
 
+
 @app.post("/analyze_realtime")
 async def analyze_realtime(
-    frame: UploadFile = File(...),
-    audio: Optional[UploadFile] = File(None),
-    click_x: Optional[int] = Form(None),
-    click_y: Optional[int] = Form(None),
-    is_first_frame: Optional[bool] = Form(False)
+        frame: UploadFile = File(...),
+        audio: Optional[UploadFile] = File(None),
+        click_x: Optional[int] = Form(None),
+        click_y: Optional[int] = Form(None),
+        is_first_frame: Optional[bool] = Form(False)
 ):
     """Analyse temps réel avec sélection de candidat par clic"""
     try:
@@ -2131,8 +2190,8 @@ async def analyze_realtime(
                 min_dist = float('inf')
                 for f_img, f_conf, tight_bbox, padded_bbox in faces:
                     # Centre du visage
-                    cx, cy = (tight_bbox[0] + tight_bbox[2])/2, (tight_bbox[1] + tight_bbox[3])/2
-                    dist = np.sqrt((cx - click_x)**2 + (cy - click_y)**2)
+                    cx, cy = (tight_bbox[0] + tight_bbox[2]) / 2, (tight_bbox[1] + tight_bbox[3]) / 2
+                    dist = np.sqrt((cx - click_x) ** 2 + (cy - click_y) ** 2)
                     if dist < min_dist:
                         min_dist = dist
                         best_face = (f_img, f_conf, tight_bbox, padded_bbox)
@@ -2146,92 +2205,96 @@ async def analyze_realtime(
                     bbox = []
             else:
                 # Par défaut, le visage le plus grand (le plus proche de la caméra)
-                face_img, det_conf, bbox, padded_bbox = max(faces, key=lambda x: (x[2][2]-x[2][0]) * (x[2][3]-x[2][1]))
+                face_img, det_conf, bbox, padded_bbox = max(faces,
+                                                            key=lambda x: (x[2][2] - x[2][0]) * (x[2][3] - x[2][1]))
                 emotion, confidence, top3 = predict_emotion_enhanced(face_img, reset_session=is_first_frame)
 
         # 2. Process Audio Chunk (si présent)
-                transcript = ""
-                audio_probs = None
-                y = None
-                if audio:
-                    audio_contents = await audio.read()
-                    content_type = audio.content_type or ''
-                    suffix_in = '.ogg' if 'ogg' in content_type else '.webm'
-                    tmp_audio_path = None
-                    wav_path = None
-                    try:
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix_in) as tmp_audio:
-                            tmp_audio.write(audio_contents)
-                            tmp_audio_path = tmp_audio.name
+        transcript = ""
+        audio_probs = None
+        y = None
+        if audio:
+            audio_contents = await audio.read()
+            content_type = audio.content_type or ''
+            suffix_in = '.ogg' if 'ogg' in content_type else '.webm'
+            tmp_audio_path = None
+            wav_path = None
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix_in) as tmp_audio:
+                    tmp_audio.write(audio_contents)
+                    tmp_audio_path = tmp_audio.name
 
-                        wav_path = tmp_audio_path.replace(suffix_in, ".wav")
-                        conv = subprocess.run(
-                            [FFMPEG_PATH, '-y', '-i', tmp_audio_path,
-                             '-ar', '16000', '-ac', '1', '-f', 'wav', wav_path],
-                            capture_output=True, timeout=15
-                        )
-                        if conv.returncode == 0 and os.path.exists(wav_path):
-                            y, sr = sf.read(wav_path)
-                            if len(y.shape) > 1:
-                                y = np.mean(y, axis=1)
-                            if len(y) > 1600:
-                                ts_result = transcriber({"sampling_rate": 16000, "raw": y})
-                                transcript = ts_result.get("text", "").strip()
-                                audio_inputs = audio_processor(
-                                    y, sampling_rate=16000, return_tensors="pt"
-                                ).to(device)
-                                with torch.no_grad():
-                                    logits_a = audio_model(audio_inputs['input_values'])
-                                    audio_probs = F.softmax(logits_a, dim=-1).cpu().numpy()[0]
-                        else:
-                            print(f"[Audio] Échec ffmpeg: {conv.stderr.decode()[-200:]}")
-                    except Exception as e_audio:
-                        print(f"[Audio] Erreur traitement: {e_audio}")
-                    finally:
-                        for p in [tmp_audio_path, wav_path]:
-                            if p and os.path.exists(p):
-                                try:
-                                    os.remove(p)
-                                except:
-                                    pass
+                wav_path = tmp_audio_path.replace(suffix_in, ".wav")
+                conv = subprocess.run(
+                    [FFMPEG_PATH, '-y', '-i', tmp_audio_path,
+                     '-ar', '16000', '-ac', '1', '-f', 'wav', wav_path],
+                    capture_output=True, timeout=15
+                )
+                if conv.returncode == 0 and os.path.exists(wav_path):
+                    y, sr = sf.read(wav_path)
+                    if len(y.shape) > 1:
+                        y = np.mean(y, axis=1)
+                    if len(y) > 1600:
+                        ts_result = transcriber({"sampling_rate": 16000, "raw": y})
+                        transcript = ts_result.get("text", "").strip()
+                        audio_inputs = audio_processor(
+                            y, sampling_rate=16000, return_tensors="pt"
+                        ).to(device)
+                        with torch.no_grad():
+                            logits_a = audio_model(audio_inputs['input_values'])
+                            audio_probs = F.softmax(logits_a, dim=-1).cpu().numpy()[0]
+                else:
+                    print(f"[Audio] Échec ffmpeg: {conv.stderr.decode()[-200:]}")
+            except Exception as e_audio:
+                print(f"[Audio] Erreur traitement: {e_audio}")
+            finally:
+                for p in [tmp_audio_path, wav_path]:
+                    if p and os.path.exists(p):
+                        try:
+                            os.remove(p)
+                        except:
+                            pass
 
-                # 3. Métriques multimodales et Qualité / Fiabilité
-                v_probs = None
-                face_status = 'Aucun visage detecté '
-                brightness = 0
-                blur_val = 0
-        if face_img is not None:
-            # Télémétrie de fiabilité de la caméra (Luminosité et Flou)
-            gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
-            brightness = float(np.mean(gray))
-            blur_val = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+            # 3. Métriques multimodales et Qualité / Fiabilité
+        v_probs = None
+        face_status = 'Aucun visage detecté '
+        brightness = 0
+        blur_val = 0
 
-            if brightness < 45:
-                face_status = 'Sombre '
-            elif brightness > 220:
-                face_status = 'Exposé '
-            elif blur_val < 50:
-                face_status = 'Flou '
-            else:
-                face_status = 'Optimal '
 
-            inputs_v = base_processor(images=cv2.cvtColor(preprocess_face(face_img), cv2.COLOR_BGR2RGB), return_tensors="pt").to(device)
-            with torch.no_grad():
-                logits_v = model(inputs_v['pixel_values'])
-                v_probs = F.softmax(logits_v, dim=-1).cpu().numpy()[0]
+if face_img is not None:
+    # Télémétrie de fiabilité de la caméra (Luminosité et Flou)
+    gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
+    brightness = float(np.mean(gray))
+    blur_val = float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
-        # Télémétrie de fiabilité audio (Silence et Bruit)
-        audio_status = 'Micro Inactif 🎙️'
-        if audio and y is not None and len(y) > 0:
-            rms = float(np.sqrt(np.mean(y**2)))
-            if rms < 0.003:
-                audio_status = 'Silence / Bruit ambiant ⏸️'
-            else:
-                audio_status = 'Clair ✅'
-        elif audio:
-            audio_status = 'Pas de voix détectée 🎙️'
+    if brightness < 45:
+        face_status = 'Sombre '
+    elif brightness > 220:
+        face_status = 'Exposé '
+    elif blur_val < 50:
+        face_status = 'Flou '
+    else:
+        face_status = 'Optimal '
 
-        metrics = calculate_candidate_metrics(v_probs, audio_probs)
+    inputs_v = base_processor(images=cv2.cvtColor(preprocess_face(face_img), cv2.COLOR_BGR2RGB),
+                              return_tensors="pt").to(device)
+    with torch.no_grad():
+        logits_v = model(inputs_v['pixel_values'])
+        v_probs = F.softmax(logits_v, dim=-1).cpu().numpy()[0]
+
+# Télémétrie de fiabilité audio (Silence et Bruit)
+audio_status = 'Micro Inactif 🎙️'
+if audio and y is not None and len(y) > 0:
+    rms = float(np.sqrt(np.mean(y ** 2)))
+    if rms < 0.003:
+        audio_status = 'Silence / Bruit ambiant ⏸️'
+    else:
+        audio_status = 'Clair ✅'
+elif audio:
+    audio_status = 'Pas de voix détectée 🎙️'
+
+metrics = calculate_candidate_metrics(v_probs, audio_probs)
 
 #         # 4. Update 3D viewer shared state
 #         try:
@@ -2253,35 +2316,37 @@ async def analyze_realtime(
 #         except Exception:
 #             pass  # Never let 3D state update break the primary response
 
-        return JSONResponse({
-            'success': True,
-            'faces_detected': face_img is not None,
-            'emotion': emotion,
-            'emotion_fr': EMOTION_NAMES_FR.get(emotion, emotion),
-            'emoji': EMOTION_EMOJIS.get(emotion, ''),
-            'color': EMOTION_COLORS.get(emotion, '#667eea'),
-            'confidence': float(confidence),
-            'transcript': transcript,
-            'candidate_metrics': metrics,
-            'bbox': [int(c) for c in bbox],
-            'all_faces': all_faces,
-            'reliability': {
-                'face': {
-                    'brightness': round(brightness, 1),
-                    'blur': round(blur_val, 1),
-                    'status': face_status
-                },
-                'audio': {
-                    'status': audio_status
-                }
-            }
-        })
+return JSONResponse({
+    'success': True,
+    'faces_detected': face_img is not None,
+    'emotion': emotion,
+    'emotion_fr': EMOTION_NAMES_FR.get(emotion, emotion),
+    'emoji': EMOTION_EMOJIS.get(emotion, ''),
+    'color': EMOTION_COLORS.get(emotion, '#667eea'),
+    'confidence': float(confidence),
+    'transcript': transcript,
+    'candidate_metrics': metrics,
+    'bbox': [int(c) for c in bbox],
+    'all_faces': all_faces,
+    'reliability': {
+        'face': {
+            'brightness': round(brightness, 1),
+            'blur': round(blur_val, 1),
+            'status': face_status
+        },
+        'audio': {
+            'status': audio_status
+        }
+    }
+})
 
-    except Exception as e:
-        print(f"Erreur temps réel: {e}")
-        import traceback
-        traceback.print_exc()
-        return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
+except Exception as e:
+print(f"Erreur temps réel: {e}")
+import traceback
+
+traceback.print_exc()
+return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
+
 
 @app.post("/import_video_from_url")
 async def import_video_from_url(url: str = FastAPIForm(...)):
@@ -2310,6 +2375,7 @@ async def import_video_from_url(url: str = FastAPIForm(...)):
         print(f"[import_video_from_url] Erreur: {e}")
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
+
 @app.post("/analyze_imported_video")
 async def analyze_imported_video(video_id: int = FastAPIForm(...)):
     import base64
@@ -2319,7 +2385,8 @@ async def analyze_imported_video(video_id: int = FastAPIForm(...)):
 
         cached = _url_video_cache.get(video_id)
         if not cached:
-            return JSONResponse({"success": False, "error": f"Vidéo {video_id} introuvable. Re-importez l'URL."}, status_code=404)
+            return JSONResponse({"success": False, "error": f"Vidéo {video_id} introuvable. Re-importez l'URL."},
+                                status_code=404)
 
         temp_path = cached["path"]
         filename = cached["filename"]
@@ -2328,23 +2395,27 @@ async def analyze_imported_video(video_id: int = FastAPIForm(...)):
         # Validate video duration (must be at least 5 seconds)
         cap = cv2.VideoCapture(temp_path)
         if not cap.isOpened():
-            return JSONResponse({'success': False, 'error': 'Impossible d\'ouvrir la vidéo pour validation'}, status_code=500)
+            return JSONResponse({'success': False, 'error': 'Impossible d\'ouvrir la vidéo pour validation'},
+                                status_code=500)
         fps = cap.get(cv2.CAP_PROP_FPS)
         frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
         duration = frame_count / fps if fps else 0
         cap.release()
         if duration < 5:
             # Video too short, reject processing
-            return JSONResponse({'success': False, 'error': f'Vidéo trop courte ({duration:.1f}s). Minimum requis: 5 secondes.'}, status_code=400)
-
+            return JSONResponse(
+                {'success': False, 'error': f'Vidéo trop courte ({duration:.1f}s). Minimum requis: 5 secondes.'},
+                status_code=400)
 
         if not os.path.exists(temp_path):
-            return JSONResponse({"success": False, "error": "Fichier temporaire expiré. Re-importez l'URL."}, status_code=404)
+            return JSONResponse({"success": False, "error": "Fichier temporaire expiré. Re-importez l'URL."},
+                                status_code=404)
 
         class VirtualUploadFile:
             def __init__(self, path, name):
                 self.filename = "url_" + name
                 self._path = path
+
             async def read(self):
                 with open(self._path, 'rb') as f:
                     return f.read()
@@ -2377,6 +2448,7 @@ async def analyze_imported_video(video_id: int = FastAPIForm(...)):
         import traceback
         traceback.print_exc()
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
 
 @app.post("/test-url")
 async def test_url(request: dict):
@@ -2430,6 +2502,8 @@ async def test_url(request: dict):
             'error': str(e),
             'diagnostic': 'URL inaccessible'
         })
+
+
 # ==========================================================
 # ENDPOINTS POUR LE DASHBOARD - KPIs MODÈLE
 # ==========================================================
@@ -2566,10 +2640,12 @@ async def kpi_dashboard_page():
     </html>
     '''
     return HTMLResponse(content=html_content)
+
+
 @app.post("/candidate_summary")
 async def candidate_summary(
-    file: UploadFile = File(None),
-    video_url: Optional[str] = Form(None)
+        file: UploadFile = File(None),
+        video_url: Optional[str] = Form(None)
 ) -> JSONResponse:
     """Return a summary of the candidate by analyzing the uploaded video or a video URL.
     If neither is provided, returns a 400 error.
@@ -2594,6 +2670,7 @@ async def candidate_summary(
         return JSONResponse(content=data)
     # Sinon, retourner tel quel
     return result
+
 
 # ==========================================================
 # 3D VIEWER INTEGRATION
@@ -2682,26 +2759,25 @@ import math
 #     })
 
 
-
 if __name__ == "__main__":
-
     import uvicorn
-    print("\n" + "="*60)
+
+    print("\n" + "=" * 60)
     print("ANALYSE EMOTIONNELLE AVANCEE - SERVEUR DEMARRE")
-    print("="*60)
+    print("=" * 60)
     print(f"API: http://localhost:8089")
     print(f"Dashboard: http://localhost:8089/dashboard")
     print(f"Health: http://localhost:8089/health")
     print(f"Model Info: http://localhost:8089/model_info")
-    print("="*60)
+    print("=" * 60)
     print("\nOUVREZ DANS VOTRE NAVIGATEUR:")
     print("   http://localhost:8089/dashboard")
- #   print("   http://localhost:8089/3d_viewer")
+    #   print("   http://localhost:8089/3d_viewer")
     print("   http://localhost:8089/kpi_dashboard")
 
     print("\nPOUR ENTRAINER LE MODELE:")
     print("   POST /train avec dataset_path")
     print("   POST /add_training_data pour ajouter des exemples")
-    print("\n" + "="*60 + "\n")
+    print("\n" + "=" * 60 + "\n")
 
     uvicorn.run(app, host="0.0.0.0", port=8089, log_level="info")
