@@ -1087,6 +1087,7 @@ async def download_video_from_url(url: str, custom_filename: str = None, max_siz
     import urllib.request
     import uuid
 
+
     unique_id = str(uuid.uuid4())[:8]
     filename = f"candidate_{unique_id}.mp4"
     temp_path = os.path.join(tempfile.gettempdir(), filename)
@@ -2166,12 +2167,21 @@ async def analyze_realtime(
         is_first_frame: Optional[bool] = Form(False)
 ):
     """Analyse temps réel avec sélection de candidat par clic"""
+    transcript = ""
+    audio_probs = None
+    y = None
+    v_probs = None
+    face_status = 'Aucun visage detecté'
+    brightness = 0
+    blur_val = 0
+
     try:
         # 1. Process Frame
         contents = await frame.read()
         nparr = np.frombuffer(contents, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if img is None: return JSONResponse({'success': False, 'error': 'Image invalide'})
+        if img is None:
+            return JSONResponse({'success': False, 'error': 'Image invalide'})
 
         faces = detect_faces(img)
         face_img = None
@@ -2181,22 +2191,16 @@ async def analyze_realtime(
         confidence = 0
 
         if faces:
-            # Récupérer les coordonnées de tous les visages détectés (visage serré uniquement)
             all_faces = [list(f[2]) for f in faces]
-
-            # Si un clic est fourni, on cherche le visage le plus proche avec un seuil de tolérance (gating)
             if click_x is not None and click_y is not None:
                 best_face = None
                 min_dist = float('inf')
                 for f_img, f_conf, tight_bbox, padded_bbox in faces:
-                    # Centre du visage
                     cx, cy = (tight_bbox[0] + tight_bbox[2]) / 2, (tight_bbox[1] + tight_bbox[3]) / 2
                     dist = np.sqrt((cx - click_x) ** 2 + (cy - click_y) ** 2)
                     if dist < min_dist:
                         min_dist = dist
                         best_face = (f_img, f_conf, tight_bbox, padded_bbox)
-
-                # Verrouiller de manière dynamique et continue sur le visage le plus proche du dernier point connu
                 if best_face is not None:
                     face_img, det_conf, bbox, padded_bbox = best_face
                     emotion, confidence, top3 = predict_emotion_enhanced(face_img, reset_session=is_first_frame)
@@ -2204,15 +2208,10 @@ async def analyze_realtime(
                     face_img = None
                     bbox = []
             else:
-                # Par défaut, le visage le plus grand (le plus proche de la caméra)
-                face_img, det_conf, bbox, padded_bbox = max(faces,
-                                                            key=lambda x: (x[2][2] - x[2][0]) * (x[2][3] - x[2][1]))
+                face_img, det_conf, bbox, padded_bbox = max(faces, key=lambda x: (x[2][2] - x[2][0]) * (x[2][3] - x[2][1]))
                 emotion, confidence, top3 = predict_emotion_enhanced(face_img, reset_session=is_first_frame)
 
-        # 2. Process Audio Chunk (si présent)
-        transcript = ""
-        audio_probs = None
-        y = None
+        # 2. Process Audio Chunk
         if audio:
             audio_contents = await audio.read()
             content_type = audio.content_type or ''
@@ -2223,7 +2222,6 @@ async def analyze_realtime(
                 with tempfile.NamedTemporaryFile(delete=False, suffix=suffix_in) as tmp_audio:
                     tmp_audio.write(audio_contents)
                     tmp_audio_path = tmp_audio.name
-
                 wav_path = tmp_audio_path.replace(suffix_in, ".wav")
                 conv = subprocess.run(
                     [FFMPEG_PATH, '-y', '-i', tmp_audio_path,
@@ -2237,9 +2235,7 @@ async def analyze_realtime(
                     if len(y) > 1600:
                         ts_result = transcriber({"sampling_rate": 16000, "raw": y})
                         transcript = ts_result.get("text", "").strip()
-                        audio_inputs = audio_processor(
-                            y, sampling_rate=16000, return_tensors="pt"
-                        ).to(device)
+                        audio_inputs = audio_processor(y, sampling_rate=16000, return_tensors="pt").to(device)
                         with torch.no_grad():
                             logits_a = audio_model(audio_inputs['input_values'])
                             audio_probs = F.softmax(logits_a, dim=-1).cpu().numpy()[0]
@@ -2255,97 +2251,59 @@ async def analyze_realtime(
                         except:
                             pass
 
-            # 3. Métriques multimodales et Qualité / Fiabilité
-        v_probs = None
-        face_status = 'Aucun visage detecté '
-        brightness = 0
-        blur_val = 0
+        # 3. Métriques
+        if face_img is not None:
+            gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
+            brightness = float(np.mean(gray))
+            blur_val = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+            if brightness < 45:
+                face_status = 'Sombre'
+            elif brightness > 220:
+                face_status = 'Exposé'
+            elif blur_val < 50:
+                face_status = 'Flou'
+            else:
+                face_status = 'Optimal'
+            inputs_v = base_processor(
+                images=cv2.cvtColor(preprocess_face(face_img), cv2.COLOR_BGR2RGB),
+                return_tensors="pt"
+            ).to(device)
+            with torch.no_grad():
+                logits_v = model(inputs_v['pixel_values'])
+                v_probs = F.softmax(logits_v, dim=-1).cpu().numpy()[0]
 
+        audio_status = 'Micro Inactif 🎙️'
+        if audio and y is not None and len(y) > 0:
+            rms = float(np.sqrt(np.mean(y ** 2)))
+            audio_status = 'Silence / Bruit ambiant ⏸️' if rms < 0.003 else 'Clair ✅'
+        elif audio:
+            audio_status = 'Pas de voix détectée 🎙️'
 
-if face_img is not None:
-    # Télémétrie de fiabilité de la caméra (Luminosité et Flou)
-    gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
-    brightness = float(np.mean(gray))
-    blur_val = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        metrics = calculate_candidate_metrics(v_probs, audio_probs)
 
-    if brightness < 45:
-        face_status = 'Sombre '
-    elif brightness > 220:
-        face_status = 'Exposé '
-    elif blur_val < 50:
-        face_status = 'Flou '
-    else:
-        face_status = 'Optimal '
+        return JSONResponse({
+            'success': True,
+            'faces_detected': face_img is not None,
+            'emotion': emotion,
+            'emotion_fr': EMOTION_NAMES_FR.get(emotion, emotion),
+            'emoji': EMOTION_EMOJIS.get(emotion, ''),
+            'color': EMOTION_COLORS.get(emotion, '#667eea'),
+            'confidence': float(confidence),
+            'transcript': transcript,
+            'candidate_metrics': metrics,
+            'bbox': [int(c) for c in bbox],
+            'all_faces': all_faces,
+            'reliability': {
+                'face': {'brightness': round(brightness, 1), 'blur': round(blur_val, 1), 'status': face_status},
+                'audio': {'status': audio_status}
+            }
+        })
 
-    inputs_v = base_processor(images=cv2.cvtColor(preprocess_face(face_img), cv2.COLOR_BGR2RGB),
-                              return_tensors="pt").to(device)
-    with torch.no_grad():
-        logits_v = model(inputs_v['pixel_values'])
-        v_probs = F.softmax(logits_v, dim=-1).cpu().numpy()[0]
-
-# Télémétrie de fiabilité audio (Silence et Bruit)
-audio_status = 'Micro Inactif 🎙️'
-if audio and y is not None and len(y) > 0:
-    rms = float(np.sqrt(np.mean(y ** 2)))
-    if rms < 0.003:
-        audio_status = 'Silence / Bruit ambiant ⏸️'
-    else:
-        audio_status = 'Clair ✅'
-elif audio:
-    audio_status = 'Pas de voix détectée 🎙️'
-
-metrics = calculate_candidate_metrics(v_probs, audio_probs)
-
-#         # 4. Update 3D viewer shared state
-#         try:
-#             if v_probs is not None:
-#                 _latest_3d_data["emotion_probs"] = {EMOTION_LABELS[i]: float(v_probs[i]) for i in range(len(EMOTION_LABELS))}
-#             _latest_3d_data["emotion"] = emotion
-#             _latest_3d_data["confidence"] = float(confidence)
-#             # Point cloud from raw frame bytes (best-effort)
-#             pc = generate_pointcloud_from_frame(contents)
-#             _latest_3d_data["pointcloud"] = pc
-#             # Waveform from audio or synthetic demo
-#             if audio and 'y' in locals() and len(y) > 0:
-#                 step = max(1, len(y) // 256)
-#                 wf = y[::step][:256]
-#                 _latest_3d_data["waveform"] = [float(v) for v in wf]
-#             else:
-#                 import math as _math
-#                 _latest_3d_data["waveform"] = [_math.sin(i * 0.2) * 0.3 for i in range(256)]
-#         except Exception:
-#             pass  # Never let 3D state update break the primary response
-
-return JSONResponse({
-    'success': True,
-    'faces_detected': face_img is not None,
-    'emotion': emotion,
-    'emotion_fr': EMOTION_NAMES_FR.get(emotion, emotion),
-    'emoji': EMOTION_EMOJIS.get(emotion, ''),
-    'color': EMOTION_COLORS.get(emotion, '#667eea'),
-    'confidence': float(confidence),
-    'transcript': transcript,
-    'candidate_metrics': metrics,
-    'bbox': [int(c) for c in bbox],
-    'all_faces': all_faces,
-    'reliability': {
-        'face': {
-            'brightness': round(brightness, 1),
-            'blur': round(blur_val, 1),
-            'status': face_status
-        },
-        'audio': {
-            'status': audio_status
-        }
-    }
-})
-
-except Exception as e:
-print(f"Erreur temps réel: {e}")
-import traceback
-
-traceback.print_exc()
-return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
+    except Exception as e:
+        print(f"Erreur temps réel: {e}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse({'success': False, 'error': str(e)}, status_code=500)
 
 
 @app.post("/import_video_from_url")
