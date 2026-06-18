@@ -604,32 +604,68 @@ def calculate_candidate_metrics(visual_probs, audio_probs=None, audio_energy=Non
     def sigmoid(x): return 1 / (1 + np.exp(-x))
 
     if visual_probs is None:
-        visual_probs = np.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]) # Neutre par défaut
+        visual_probs = np.array([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0])  # Neutre par défaut
 
     v_sad, v_dis, v_ang, v_neu, v_fea, v_sur, v_hap = 0, 1, 2, 3, 4, 5, 6
 
     # Stress Management
-    r_stress = (visual_probs[v_fea] * 1.5 + visual_probs[v_ang] * 1.0 + visual_probs[v_sad] * 0.8)
-    if audio_probs is not None and len(audio_probs) == 4: r_stress += (audio_probs[3] * 1.2 + audio_probs[2] * 0.8)
+    r_stress = (
+        visual_probs[v_fea] * 1.5 +
+        visual_probs[v_ang] * 1.0 +
+        visual_probs[v_sad] * 0.8
+    )
+    if audio_probs is not None and len(audio_probs) == 4:
+        r_stress += (audio_probs[3] * 1.2 + audio_probs[2] * 0.8)
+
     stress_management = (1 - sigmoid(r_stress * 3 - 1.5)) * 100
 
     # Communication
-    r_comm = (visual_probs[v_neu] * 0.5 + visual_probs[v_hap] * 1.0)
-    if audio_probs is not None and len(audio_probs) == 4: r_comm += (audio_probs[0] * 0.5 + audio_probs[1] * 1.0)
+    r_comm = (
+        visual_probs[v_neu] * 0.5 +
+        visual_probs[v_hap] * 1.0
+    )
+    if audio_probs is not None and len(audio_probs) == 4:
+        r_comm += (audio_probs[0] * 0.5 + audio_probs[1] * 1.0)
+
     communication = sigmoid(r_comm * 3 - 1.0) * 100
 
     # Expressivity
     entropy = -np.sum(visual_probs * np.log(visual_probs + 1e-9))
     expressivity = (entropy / 1.94) * 100
 
-     # 5. Niveau d'assurance
-    raw_assur = (visual_probs[v_neu] * 0.8 + visual_probs[v_hap] * 1.2) - (visual_probs[v_fea] * 1.0 + visual_probs[v_sad] * 0.5)
+    # Assurance Level
+    raw_assur = (
+        visual_probs[v_neu] * 0.8 +
+        visual_probs[v_hap] * 1.2
+    ) - (
+        visual_probs[v_fea] * 1.0 +
+        visual_probs[v_sad] * 0.5
+    )
+
     if audio_probs is not None and len(audio_probs) == 4:
-        raw_assur += (audio_probs[0] * 0.8 + audio_probs[1] * 1.2) - (audio_probs[2] * 0.5)
+        raw_assur += (
+            audio_probs[0] * 0.8 +
+            audio_probs[1] * 1.2 -
+            audio_probs[2] * 0.5
+        )
+
     assurance = sigmoid(raw_assur * 2.5) * 100
 
-    # Score de Confiance Global (Moyenne des certitudes des modèles)
+    # Confidence Score
     confidence_score = (np.max(visual_probs) * 0.6) + (0.4 if audio_probs is not None else 0)
+
+    # =========================
+    # GLOBAL HIRING SCORE
+    # =========================
+    global_score = (
+        assurance * 0.30 +
+        communication * 0.25 +
+        stress_management * 0.25 +
+        expressivity * 0.10 +
+        confidence_score * 100 * 0.10
+    )
+
+    global_score = max(0, min(100, global_score))
 
     return {
         'stress_management': float(max(0, min(100, stress_management))),
@@ -637,7 +673,8 @@ def calculate_candidate_metrics(visual_probs, audio_probs=None, audio_energy=Non
         'expressivity': float(max(0, min(100, expressivity))),
         'speech_rate': float(50 + (expressivity * 0.4)),
         'assurance_level': float(max(0, min(100, assurance))),
-        'confidence_score': float(max(0, min(100, confidence_score * 100)))
+        'confidence_score': float(max(0, min(100, confidence_score * 100))),
+        'global_score': float(global_score)
     }
 
 def analyze_soft_skills(transcript, metrics):
