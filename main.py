@@ -2150,88 +2150,56 @@ async def analyze_realtime(
                 emotion, confidence, top3 = predict_emotion_enhanced(face_img, reset_session=is_first_frame)
 
         # 2. Process Audio Chunk (si présent)
-        transcript = ""
-        audio_probs = None
-        if audio:
-            audio_contents = await audio.read()
+                transcript = ""
+                audio_probs = None
+                y = None
+                if audio:
+                    audio_contents = await audio.read()
+                    content_type = audio.content_type or ''
+                    suffix_in = '.ogg' if 'ogg' in content_type else '.webm'
+                    tmp_audio_path = None
+                    wav_path = None
+                    try:
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix_in) as tmp_audio:
+                            tmp_audio.write(audio_contents)
+                            tmp_audio_path = tmp_audio.name
 
-            # Détecter l'extension selon le content-type du fichier reçu
-            content_type = audio.content_type or ''
-            suffix_in = '.ogg' if 'ogg' in content_type else '.webm'
+                        wav_path = tmp_audio_path.replace(suffix_in, ".wav")
+                        conv = subprocess.run(
+                            [FFMPEG_PATH, '-y', '-i', tmp_audio_path,
+                             '-ar', '16000', '-ac', '1', '-f', 'wav', wav_path],
+                            capture_output=True, timeout=15
+                        )
+                        if conv.returncode == 0 and os.path.exists(wav_path):
+                            y, sr = sf.read(wav_path)
+                            if len(y.shape) > 1:
+                                y = np.mean(y, axis=1)
+                            if len(y) > 1600:
+                                ts_result = transcriber({"sampling_rate": 16000, "raw": y})
+                                transcript = ts_result.get("text", "").strip()
+                                audio_inputs = audio_processor(
+                                    y, sampling_rate=16000, return_tensors="pt"
+                                ).to(device)
+                                with torch.no_grad():
+                                    logits_a = audio_model(audio_inputs['input_values'])
+                                    audio_probs = F.softmax(logits_a, dim=-1).cpu().numpy()[0]
+                        else:
+                            print(f"[Audio] Échec ffmpeg: {conv.stderr.decode()[-200:]}")
+                    except Exception as e_audio:
+                        print(f"[Audio] Erreur traitement: {e_audio}")
+                    finally:
+                        for p in [tmp_audio_path, wav_path]:
+                            if p and os.path.exists(p):
+                                try:
+                                    os.remove(p)
+                                except:
+                                    pass
 
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix_in) as tmp_audio:
-                tmp_audio.write(audio_contents)
-                tmp_audio_path = tmp_audio.name
-
-            # Convertir WebM/OGG → WAV via ffmpeg avant traitement
-            wav_path = tmp_audio_path.replace(suffix_in, ".wav")
-            try:
-                result = subprocess.run(
-                    [FFMPEG_PATH, '-y', '-i', tmp_audio_path,
-                     '-ar', '16000', '-ac', '1', '-f', 'wav', wav_path],
-                    capture_output=True, timeout=10
-                )
-                # 2. Process Audio Chunk (si présent)
-                        transcript = ""
-                        audio_probs = None
-                        y = None
-                        if audio:
-                            audio_contents = await audio.read()
-
-                            # Détecter l'extension selon le content-type du fichier reçu
-                            content_type = audio.content_type or ''
-                            suffix_in = '.ogg' if 'ogg' in content_type else '.webm'
-
-                            tmp_audio_path = None
-                            wav_path = None
-                            try:
-                                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix_in) as tmp_audio:
-                                    tmp_audio.write(audio_contents)
-                                    tmp_audio_path = tmp_audio.name
-
-                                wav_path = tmp_audio_path.replace(suffix_in, ".wav")
-                                conv = subprocess.run(
-                                    [FFMPEG_PATH, '-y', '-i', tmp_audio_path,
-                                     '-ar', '16000', '-ac', '1', '-f', 'wav', wav_path],
-                                    capture_output=True, timeout=15
-                                )
-
-                                if conv.returncode == 0 and os.path.exists(wav_path):
-                                    import soundfile as sf
-                                    y, sr = sf.read(wav_path)
-                                    if len(y.shape) > 1:
-                                        y = np.mean(y, axis=1)
-
-                                    if len(y) > 1600:  # au moins 0.1s de signal
-                                        # Transcription Whisper
-                                        ts_result = transcriber({"sampling_rate": 16000, "raw": y})
-                                        transcript = ts_result.get("text", "").strip()
-
-                                        # Analyse émotionnelle audio HuBERT
-                                        audio_inputs = audio_processor(
-                                            y, sampling_rate=16000, return_tensors="pt"
-                                        ).to(device)
-                                        with torch.no_grad():
-                                            logits_a = audio_model(audio_inputs['input_values'])
-                                            audio_probs = F.softmax(logits_a, dim=-1).cpu().numpy()[0]
-                                else:
-                                    print(f"[Audio] Échec ffmpeg: {conv.stderr.decode()[-200:]}")
-
-                            except Exception as e_audio:
-                                print(f"[Audio] Erreur traitement: {e_audio}")
-                            finally:
-                                for p in [tmp_audio_path, wav_path]:
-                                    if p and os.path.exists(p):
-                                        try:
-                                            os.remove(p)
-                                        except:
-                                            pass
-
-        # 3. Métriques multimodales et Qualité / Fiabilité
-        v_probs = None
-        face_status = 'Aucun visage detecté '
-        brightness = 0
-        blur_val = 0
+                # 3. Métriques multimodales et Qualité / Fiabilité
+                v_probs = None
+                face_status = 'Aucun visage detecté '
+                brightness = 0
+                blur_val = 0
         if face_img is not None:
             # Télémétrie de fiabilité de la caméra (Luminosité et Flou)
             gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
