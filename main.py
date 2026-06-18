@@ -2154,29 +2154,27 @@ async def analyze_realtime(
         audio_probs = None
         if audio:
             audio_contents = await audio.read()
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_audio:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp_audio:
                 tmp_audio.write(audio_contents)
                 tmp_audio_path = tmp_audio.name
-
+        
+            # Convertir WebM → WAV via ffmpeg avant traitement
+            wav_path = tmp_audio_path.replace(".webm", ".wav")
             try:
-                import soundfile as sf
-                y, sr = sf.read(tmp_audio_path)
-                if len(y.shape) > 1:
-                    y = np.mean(y, axis=1)
-
-                # Transcription du chunk avec Whisper en passant le raw audio
-                ts_result = transcriber({"sampling_rate": 16000, "raw": y})
-                transcript = ts_result["text"]
-
-                if len(y) > 0:
-                    audio_inputs = audio_processor(y, sampling_rate=16000, return_tensors="pt").to(device)
-                    with torch.no_grad():
-                        logits_a = audio_model(audio_inputs['input_values'])
-                        audio_probs = F.softmax(logits_a, dim=-1).cpu().numpy()[0]
+                result = subprocess.run(
+                    [FFMPEG_PATH, '-y', '-i', tmp_audio_path,
+                     '-ar', '16000', '-ac', '1', '-f', 'wav', wav_path],
+                    capture_output=True, timeout=10
+                )
+                if result.returncode == 0:
+                    import soundfile as sf
+                    y, sr = sf.read(wav_path)
+                    # ... reste du traitement audio existant
             except Exception as e_audio:
-                print(f"Erreur audio segment: {e_audio}")
+                print(f"Erreur conversion audio: {e_audio}")
             finally:
-                if os.path.exists(tmp_audio_path): os.remove(tmp_audio_path)
+                for p in [tmp_audio_path, wav_path]:
+                    if os.path.exists(p): os.remove(p)
 
         # 3. Métriques multimodales et Qualité / Fiabilité
         v_probs = None
