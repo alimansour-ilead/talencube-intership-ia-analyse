@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-opencv-python-headless
+opencv-python
 numpy
 scikit-learn
 scipy
@@ -22,5 +22,5 @@ filterpy
 transformers
 ultralytics
 insightface
-mediapipe
+mediapipe==0.10.9
 py-feat

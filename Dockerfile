@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsm6 \
     libxext6 \
     build-essential \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -19,6 +20,14 @@ RUN pip install --no-cache-dir torch torchvision torchaudio \
 
 RUN pip install --no-cache-dir "moviepy<2.0" && \
     pip install --no-cache-dir -r requirements.txt
+
+# Modèles MediaPipe Tasks pour face_analyzer.py (mode professionnel : gaze, posture précis)
+# Sans eux, fallback OpenCV automatique — fonctionnel mais moins riche.
+RUN mkdir -p models/mediapipe && \
+    curl -L -o models/mediapipe/face_landmarker.task \
+    https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task && \
+    curl -L -o models/mediapipe/pose_landmarker_lite.task \
+    https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task
 
 COPY . .
 
