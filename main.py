@@ -17,6 +17,7 @@ from ultralytics import YOLO
 from transformers import (AutoImageProcessor, AutoModelForImageClassification)
 import warnings
 import os
+os.environ["MEDIAPIPE_DISABLE_GPU"] = "1"
 import json
 from datetime import datetime
 from collections import deque
@@ -1197,6 +1198,7 @@ def _extract_candidates_preview_sync(file_bytes: bytes, filename: str):
     Retourne un tuple (payload_dict, status_code) — jamais de JSONResponse
     ici, puisqu'on est hors du contexte async/FastAPI dans ce thread.
     """
+    import time
     tmp_path = fixed_path = None
     try:
         tmp_path   = os.path.join(tempfile.gettempdir(),
@@ -1319,7 +1321,7 @@ def _extract_candidates_preview_sync(file_bytes: bytes, filename: str):
                         'best_size':  size,
                         'first_seen': float(t),
                     })
-            
+            time.sleep(0)
         video_clip.close()
         for p in [tmp_path, fixed_path]:
             if p and os.path.exists(p):
@@ -1390,7 +1392,7 @@ def _extract_candidates_preview_sync(file_bytes: bytes, filename: str):
                         known_candidates.pop(j)
                         merged_any = True
                         break
-            
+            time.sleep(0)
         print(f"[Preview] Après fusion: {len(known_candidates)} "
               f"candidat(s) unique(s) (passes={merge_pass})")
 
@@ -2332,7 +2334,7 @@ def _analyze_video_sync(file_bytes: bytes, filename: str,
             if audio_probs_numpy is not None:
                 entry['audio_probs'] = audio_probs_numpy.tolist()
             frames_results.append(entry)
-           
+            time.sleep(0)
         video_clip.close()
         if os.path.exists(tmp_path):
             try:
