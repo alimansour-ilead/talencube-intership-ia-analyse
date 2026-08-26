@@ -33,6 +33,7 @@ import asyncio
 import functools
 import base64
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 from sqlalchemy import (create_engine, Column, Integer, String,
                         DateTime, LargeBinary, Text)
 from sqlalchemy.ext.declarative import declarative_base
@@ -466,7 +467,7 @@ executor        = ThreadPoolExecutor(max_workers=4)
 # décodage des frames et l'audio des sessions WebSocket actives.
 # Avec un pool séparé, le traitement vidéo lourd ne peut plus jamais
 # affamer le temps réel, quelle que soit sa durée.
-video_processing_executor = ThreadPoolExecutor(max_workers=2)
+video_processing_executor = ProcessPoolExecutor(max_workers=2)
 
 print("=" * 60)
 print("TOUS LES MODELES SONT PRETS!")
