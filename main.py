@@ -665,8 +665,7 @@ def calibrate_single_frame(probs):
 def predict_emotion_enhanced(face, reset_session=False):
     try:
         face_rgb = cv2.cvtColor(preprocess_face(face), cv2.COLOR_BGR2RGB)
-        inputs   = base_processor(images=face_rgb,
-                                  return_tensors="pt").to(device)
+        inputs   = base_processor(images=face_rgb, return_tensors="pt").to(device)
         if USE_ONNX:
             pv_np     = inputs['pixel_values'].cpu().numpy()
             logits, _ = vit_session.run(None, {"pixel_values": pv_np})
@@ -677,19 +676,15 @@ def predict_emotion_enhanced(face, reset_session=False):
                     model(inputs['pixel_values']), dim=-1
                 ).cpu().numpy()[0]
 
-        # ← PATCH v7.2 : corrige le biais "parler = colère" via AU
-        # (py-feat) AVANT calibration. Sans effet si py-feat est
-        # indisponible ou si la frame n'est pas classée angry/disgust.
         probs = correct_emotion_probs(face, probs)
 
         emotion, conf, cal = calibrate_single_frame(probs)
         top3_idx = np.argsort(cal)[-3:][::-1]
         top3     = [(EMOTION_LABELS[i], float(cal[i])) for i in top3_idx]
-        return emotion, conf, top3
+        return emotion, conf, top3, probs   # ← AJOUT : probs en 4e retour
     except Exception as e:
         print(f"Erreur prédiction: {e}")
-        return "neutral", 0.5, [("neutral", 0.5)]
-
+        return "neutral", 0.5, [("neutral", 0.5)], np.array([0.,0.,0.,1.,0.,0.,0.])  # ← AJOUT
 def _vit_raw_probs_sync(face_img):
     face_rgb = cv2.cvtColor(preprocess_face(face_img), cv2.COLOR_BGR2RGB)
     inp_v    = base_processor(images=face_rgb, return_tensors="pt").to(device)
@@ -3946,7 +3941,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
             # d'émotion, appelée à chaque frame validée — c'est
             # l'appel le plus coûteux après ArcFace (modèle de deep
             # learning complet).
-            emotion, confidence, _ = await _run_sync(
+            emotion, confidence, _, v_probs = await _run_sync(
                 loop, executor, predict_emotion_enhanced, face_img)
 
             if confidence < 0.40:
@@ -4003,9 +3998,6 @@ async def ws_analyze_realtime(websocket: WebSocket):
             # distincte de predict_emotion_enhanced ci-dessus) — utilise
             # le helper _vit_raw_probs_sync extrait plus haut dans le
             # fichier, désormais déportée comme les autres appels lourds.
-            v_probs = await _run_sync(
-                loop, executor, _vit_raw_probs_sync, face_img)
-
             metrics  = calculate_candidate_metrics(
                 v_probs,
                 history=emotion_ws_history,
