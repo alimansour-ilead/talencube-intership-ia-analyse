@@ -48,6 +48,7 @@ from patches_v7 import (
 from au_analyzer import (
     load_au_detector, correct_emotion_probs, MODEL_STATUS_AU,
 )
+from app_embedding_cache import store_embedding, get_embedding, clear_old_entries 
 import builtins
 import time as _time_module
 from datetime import datetime
@@ -1423,7 +1424,6 @@ def _extract_candidates_preview_sync(file_bytes: bytes, filename: str):
             }, 200)
 
         import uuid
-        from app_embedding_cache import store_embedding, clear_old_entries
         session_id = str(uuid.uuid4())[:8]
         clear_old_entries()
 
@@ -1639,7 +1639,6 @@ def _analyze_video_sync(file_bytes: bytes, filename: str,
         stored_face = None
 
         if embedding_key:
-            from app_embedding_cache import get_embedding
             stored_emb, stored_face = get_embedding(embedding_key)
             if stored_emb is not None:
                 print(f"[analyze_video] 🎯 Embedding chargé depuis cache "
@@ -3225,7 +3224,6 @@ async def ws_analyze_realtime(websocket: WebSocket):
             if (_embedding_key is not None and
                     _pending_embedding is None and
                     not tm.identity.memorized):
-                from app_embedding_cache import get_embedding
                 stored_emb, stored_face = get_embedding(_embedding_key)
                 if stored_emb is not None:
                     _pending_embedding = (stored_emb, stored_face)
