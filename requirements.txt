@@ -24,3 +24,4 @@ ultralytics
 insightface
 mediapipe==0.10.9
 py-feat
+redis
