@@ -3619,7 +3619,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
                             f_k = img[max(0,int(t_k[1])):min(H,int(t_k[3])),
                                       max(0,int(t_k[0])):min(W,int(t_k[2]))]
                             if f_k.size > 0:
-                                em_k, cf_k, _ = await _run_sync(
+                                em_k, cf_k, _, _ = await _run_sync(
                                     loop, executor, predict_emotion_enhanced, f_k)
                                 gr_k  = cv2.cvtColor(f_k, cv2.COLOR_BGR2GRAY)
                                 br_k  = float(np.mean(gr_k))
@@ -3845,7 +3845,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
                                 max(0,int(tight_r[1])):min(H,int(tight_r[3])),
                                 max(0,int(tight_r[0])):min(W,int(tight_r[2]))]
                             if face_img_r.size > 0:
-                                emotion_r, conf_r2, _ = await _run_sync(
+                                emotion_r, conf_r2, _, _ = await _run_sync(
                                     loop, executor, predict_emotion_enhanced, face_img_r)
                                 gray_r2   = cv2.cvtColor(
                                     face_img_r, cv2.COLOR_BGR2GRAY)
@@ -4110,12 +4110,11 @@ async def analyze_realtime(
                     (f[2][1]+f[2][3])/2 - click_y
                 ))
                 face_img, _, bbox, _ = best
-                emotion, confidence, _ = predict_emotion_enhanced(face_img)
-            else:
+                emotion, confidence, _, _ = predict_emotion_enhanced(face_img)
                 best = max(faces,
                            key=lambda x: (x[2][2]-x[2][0])*(x[2][3]-x[2][1]))
                 face_img, _, bbox, _ = best
-                emotion, confidence, _ = predict_emotion_enhanced(face_img)
+                emotion, confidence, _, _ = predict_emotion_enhanced(face_img)
 
         if audio:
             audio_contents = await audio.read()
