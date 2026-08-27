@@ -1232,9 +1232,18 @@ def _extract_candidates_preview_sync(file_bytes: bytes, filename: str):
         H_vid     = int(video_clip.size[1])
         MIN_FACE_PX = 30 * 30
 
-        if total_dur <= 60:
+        # ← Limite le scan aux 30 premières secondes de la vidéo, au lieu
+        # de parcourir toute sa durée. Le candidat est presque toujours
+        # visible dès le début de l'entretien — inutile de décoder et
+        # analyser (YOLO + ArcFace) des minutes entières de vidéo juste
+        # pour extraire un aperçu du visage. Réduit fortement le temps
+        # de traitement et la charge CPU sur ce endpoint.
+        SCAN_DURATION_CAP = 30.0
+        scan_dur = min(total_dur, SCAN_DURATION_CAP)
+
+        if scan_dur <= 60:
             SAMPLE_STEP = 0.5
-        elif total_dur <= 300:
+        elif scan_dur <= 300:
             SAMPLE_STEP = 1.5
         else:
             SAMPLE_STEP = 2.0
@@ -1244,9 +1253,10 @@ def _extract_candidates_preview_sync(file_bytes: bytes, filename: str):
         SPATIAL_MERGE_PX = 80
         MAX_SAMPLES      = 8
 
-        sample_times = sorted(set(np.arange(0, total_dur, SAMPLE_STEP)))
+        sample_times = sorted(set(np.arange(0, scan_dur, SAMPLE_STEP)))
 
-        print(f"[Preview] Durée: {total_dur:.0f}s · "
+        print(f"[Preview] Durée vidéo totale: {total_dur:.0f}s · "
+              f"Scan limité aux {scan_dur:.0f}s premières secondes · "
               f"Frames: {len(sample_times)} (pas={SAMPLE_STEP}s)")
 
         known_candidates = []
@@ -1391,7 +1401,7 @@ def _extract_candidates_preview_sync(file_bytes: bytes, filename: str):
         print(f"[Preview] Après fusion: {len(known_candidates)} "
               f"candidat(s) unique(s) (passes={merge_pass})")
 
-        min_count = 1 if total_dur <= 20 else 2
+        min_count = 1 if scan_dur <= 20 else 2
         valid = [c for c in known_candidates if c['count'] >= min_count]
         valid.sort(key=lambda c: c['first_seen'])
 
