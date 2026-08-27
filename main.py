@@ -469,6 +469,20 @@ executor        = ThreadPoolExecutor(max_workers=4)
 # affamer le temps réel, quelle que soit sa durée.
 video_processing_executor =ThreadPoolExecutor(max_workers=2)
 
+# ← Limite le nombre d'analyses vidéo lourdes (analyze_video +
+# extract_candidates_preview) tournant EN MÊME TEMPS, indépendamment
+# du nombre de workers du pool. Sans cette limite, rien n'empêche
+# plusieurs requêtes simultanées de toutes se lancer en parallèle,
+# saturant le CPU en continu (confirmé par les Metrics Railway :
+# 6-8 vCPU en charge quasi permanente sur plusieurs heures, jusqu'à
+# 80% de taux d'erreur et des pics de Response Time à 20-25s). Cette
+# saturation empêchait aussi le serveur de répondre à temps aux
+# handshakes WebSocket (échecs de connexion côté client Java/Heroku).
+# La valeur 2 est alignée sur max_workers du video_processing_executor
+# ci-dessus — au-delà, les requêtes attendent en file plutôt que de
+# se battre pour le même CPU.
+video_analysis_semaphore = asyncio.Semaphore(2)
+
 print("=" * 60)
 print("TOUS LES MODELES SONT PRETS!")
 print("=" * 60)
@@ -1477,10 +1491,13 @@ async def extract_candidates_preview(file: UploadFile = File(...)):
     # run_in_executor — la boucle asyncio reste libre pendant ce temps.
     file_bytes = await file.read()
     loop = asyncio.get_running_loop()
-    payload, status_code = await loop.run_in_executor(
-        video_processing_executor, _extract_candidates_preview_sync,
-        file_bytes, file.filename
-    )
+    # ← Attend son tour si 2 analyses lourdes tournent déjà — évite la
+    # saturation CPU qui bloque le WebSocket et les autres requêtes.
+    async with video_analysis_semaphore:
+        payload, status_code = await loop.run_in_executor(
+            video_processing_executor, _extract_candidates_preview_sync,
+            file_bytes, file.filename
+        )
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -2687,13 +2704,15 @@ async def analyze_video(
         target_y: Optional[float]  = Form(None),
         embedding_key: Optional[str] = Form(None),
 ):
-   
     file_bytes = await file.read()
     loop = asyncio.get_running_loop()
-    payload, status_code = await loop.run_in_executor(
-        video_processing_executor, _analyze_video_sync,
-        file_bytes, file.filename, target_x, target_y, embedding_key
-    )
+    # ← Attend son tour si 2 analyses lourdes tournent déjà — évite la
+    # saturation CPU qui bloque le WebSocket et les autres requêtes.
+    async with video_analysis_semaphore:
+        payload, status_code = await loop.run_in_executor(
+            video_processing_executor, _analyze_video_sync,
+            file_bytes, file.filename, target_x, target_y, embedding_key
+        )
     return JSONResponse(payload, status_code=status_code)
 
 
