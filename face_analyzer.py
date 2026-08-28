@@ -310,10 +310,18 @@ class FaceAnalyzer:
             if not pr.pose_landmarks:
                 return {'droite': None, 'posture_ratio': 0.5, 'score': 0.5}
 
-            lm   = pr.pose_landmarks[0]
-            PL   = mp.tasks.vision.PoseLandmark
-            sh_l = lm[PL.LEFT_SHOULDER]
-            sh_r = lm[PL.RIGHT_SHOULDER]
+            lm = pr.pose_landmarks[0]
+            # ← FIX : mp.tasks.vision.PoseLandmark n'existe pas dans la
+            # nouvelle API MediaPipe Tasks (contrairement à l'ancienne
+            # mp.solutions.pose.PoseLandmark) — provoquait une erreur à
+            # CHAQUE frame ("has no attribute 'PoseLandmark'"), rendant
+            # l'analyse de posture silencieusement indisponible en
+            # continu. Les landmarks de pose sont une simple liste
+            # indexée par position ; 11=épaule gauche, 12=épaule droite
+            # sont les indices standards BlazePose, stables et
+            # documentés indépendamment de la version de l'API.
+            sh_l = lm[11]
+            sh_r = lm[12]
 
             diff   = float(abs(sh_l.y - sh_r.y))
             droite = bool(diff < 0.05)
