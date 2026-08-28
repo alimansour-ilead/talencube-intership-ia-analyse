@@ -270,9 +270,16 @@ try:
     else:
         yolo_model = YOLO("yolov8n.pt")
         print("[YOLO] ⚠️ v8n généraliste (fallback)")
+    # ← OPTIMISATION PERF : calculé une seule fois ici, au lieu de faire
+    # deux appels os.path.exists() (I/O disque) à CHAQUE frame dans
+    # detect_faces() — ces fichiers ne changent jamais après le
+    # démarrage du serveur.
+    IS_FACE_MODEL = (os.path.exists("yolov8s-face.pt") or
+                      os.path.exists("yolov8n-face.pt"))
     MODEL_STATUS["yolo"] = True
 except Exception as e:
     MODEL_STATUS["yolo"] = False
+    IS_FACE_MODEL = False
     print(f"[YOLO] ❌ Échec chargement: {e} — détection de visage désactivée")
 
 face_cascade = cv2.CascadeClassifier(
@@ -526,8 +533,7 @@ def detect_faces(frame):
     """
     faces    = []
     img_h, img_w = frame.shape[:2]
-    is_face_model = (os.path.exists("yolov8s-face.pt") or
-                     os.path.exists("yolov8n-face.pt"))
+    is_face_model = IS_FACE_MODEL
 
     results = yolo_model(frame, imgsz=320, conf=0.22, verbose=False)
     for r in results:
@@ -4114,17 +4120,22 @@ async def analyze_realtime(
 
         if faces:
             all_faces = [list(f[2]) for f in faces]
+            # ← FIX : le "else" manquant faisait que la sélection par clic
+            # (best = min(...)) était systématiquement écrasée par la
+            # sélection du plus grand visage juste après, ET provoquait
+            # un appel ViT (predict_emotion_enhanced) en double, son
+            # premier résultat n'étant jamais utilisé. Le clic candidat
+            # ne fonctionnait donc plus du tout sur cet endpoint.
             if click_x is not None and click_y is not None:
                 best = min(faces, key=lambda f: np.hypot(
                     (f[2][0]+f[2][2])/2 - click_x,
                     (f[2][1]+f[2][3])/2 - click_y
                 ))
-                face_img, _, bbox, _ = best
-                emotion, confidence, _, _ = predict_emotion_enhanced(face_img)
+            else:
                 best = max(faces,
                            key=lambda x: (x[2][2]-x[2][0])*(x[2][3]-x[2][1]))
-                face_img, _, bbox, _ = best
-                emotion, confidence, _, _ = predict_emotion_enhanced(face_img)
+            face_img, _, bbox, _ = best
+            emotion, confidence, _, _ = predict_emotion_enhanced(face_img)
 
         if audio:
             audio_contents = await audio.read()

@@ -793,12 +793,23 @@ class IdentityManager:
         sim >= 0.80 → alpha 0.15 (mise à jour forte)
         sim >= 0.65 → alpha 0.08 (mise à jour moyenne)
         sim < 0.65  → alpha 0.03 (mise à jour douce)
+
+        ← OPTIMISATION PERF : utilise _arcface_embed_fast (320x320) au
+        lieu de _arcface_embed (640x640, jusqu'à 6 appels ArcFace en
+        pire cas). Cette méthode est appelée à CHAQUE frame acceptée
+        du flux temps réel, juste après que verify() ait DÉJÀ extrait
+        un embedding via la version rapide pour la même frame — refaire
+        une extraction complète en haute précision ici double le coût
+        CPU d'ArcFace pour rien : une mise à jour progressive de
+        moyenne glissante n'a pas besoin de la précision maximale,
+        contrairement à la mémorisation initiale (add_frame), qui elle
+        garde volontairement la version lente/précise.
         """
         if self._ref is None or self._memorizing:
             return
         emb = None
         if self._use_arc and face_img is not None:
-            emb = self._arcface_embed(face_img)
+            emb = self._arcface_embed_fast(face_img)
         elif not self._use_arc and embedding is not None:
             emb = self._norm(embedding)
         if emb is None:
