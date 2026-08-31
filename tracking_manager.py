@@ -643,7 +643,19 @@ class IdentityManager:
 
         emb = None
         if self._use_arc:
-            emb = self._arcface_embed(face_img)
+            # ← OPTIMISATION PERF : bascule vers _arcface_embed_fast()
+            # (320x320) au lieu de _arcface_embed() (640x640, jusqu'à
+            # 6 appels ArcFace en pire cas). Cette fonction est appelée
+            # jusqu'à MEMORIZE_FRAMES fois (5) au tout début de chaque
+            # session temps réel, AVANT que la moindre analyse ne
+            # puisse démarrer — c'était la cause du retard de 10-15s
+            # observé par les utilisateurs avant le premier résultat.
+            # Le changement reste sûr : la référence finale est une
+            # MOYENNE de 5 frames (le bruit d'une extraction moins
+            # précise s'atténue déjà par cette moyenne), et update()
+            # — déjà optimisé de la même façon — continue d'affiner
+            # cette référence tout au long de l'entretien ensuite.
+            emb = self._arcface_embed_fast(face_img)
             if emb is None:
                 print("[Identity] ArcFace échoué — frame ignorée")
                 return False

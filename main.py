@@ -1210,8 +1210,18 @@ def _extract_candidates_preview_sync(file_bytes: bytes, filename: str):
             buf.write(file_bytes)
 
         print(f"[Preview] Réparation: {filename}")
+        # ← OPTIMISATION MAJEURE : -t 35 limite le réencodage FFmpeg aux
+        # 35 premières secondes (30s de scan + marge), au lieu de toute
+        # la vidéo. C'était le vrai goulot d'étranglement restant :
+        # même avec le scan Python limité à 30s (SCAN_DURATION_CAP),
+        # cette étape de "réparation" réencodait l'INTÉGRALITÉ de la
+        # vidéo avant même que le scan ne démarre — pour une vidéo de
+        # 10 minutes, ça pouvait prendre 30-60s+ à elle seule, largement
+        # plus que le scan optimisé qui suit. Avec -t 35, cette étape
+        # devient proportionnelle à ~35s peu importe la durée réelle
+        # de la vidéo uploadée.
         repair = subprocess.run(
-            [FFMPEG_PATH, '-y', '-i', tmp_path,
+            [FFMPEG_PATH, '-y', '-i', tmp_path, '-t', '35',
              '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
              '-c:a', 'aac', '-movflags', '+faststart', fixed_path],
             capture_output=True, timeout=300
@@ -1221,6 +1231,27 @@ def _extract_candidates_preview_sync(file_bytes: bytes, filename: str):
                       os.path.exists(fixed_path) and
                       os.path.getsize(fixed_path) > 0
                       else tmp_path)
+
+        # ← AJOUT : récupère la vraie durée originale via ffprobe
+        # (lecture de métadonnées seule, quasi instantanée — ne décode
+        # pas la vidéo) UNIQUEMENT pour un affichage de log correct.
+        # Sans ça, comme la vidéo réparée est maintenant tronquée à
+        # 35s, le log afficherait à tort "durée: 35s" même pour une
+        # vidéo originale de 10 minutes — cette étape corrige juste
+        # l'information affichée, sans impact sur le comportement.
+        true_duration_label = None
+        try:
+            probe = subprocess.run(
+                [FFMPEG_PATH, '-i', tmp_path],
+                capture_output=True, timeout=10, text=True
+            )
+            import re as _re
+            m = _re.search(r"Duration:\s*(\d+):(\d+):(\d+)", probe.stderr or "")
+            if m:
+                h, mnt, s = map(int, m.groups())
+                true_duration_label = f"{h*3600 + mnt*60 + s}s (originale)"
+        except Exception:
+            pass
 
         try:
             video_clip = mp.VideoFileClip(video_path)
@@ -1261,7 +1292,8 @@ def _extract_candidates_preview_sync(file_bytes: bytes, filename: str):
 
         sample_times = sorted(set(np.arange(0, scan_dur, SAMPLE_STEP)))
 
-        print(f"[Preview] Durée vidéo totale: {total_dur:.0f}s · "
+        print(f"[Preview] Durée vidéo: "
+              f"{true_duration_label or f'{total_dur:.0f}s (tronquée)'} · "
               f"Scan limité aux {scan_dur:.0f}s premières secondes · "
               f"Frames: {len(sample_times)} (pas={SAMPLE_STEP}s)")
 
@@ -2873,6 +2905,12 @@ async def ws_analyze_realtime(websocket: WebSocket):
     _skip_arcface      = False
     _n_candidates      = 1
 
+    # ← AJOUT : cache du dernier résultat MediaPipe (regard, clignement,
+    # posture, tension, symétrie) — voir explication au point d'usage
+    # plus bas dans la boucle temps réel.
+    _last_face_analysis_result = None
+    _last_face_boost = {}
+
     _last_emotion      = 'neutral'
     _last_confidence   = 0.5
     _last_metrics: dict = {}
@@ -3119,6 +3157,10 @@ async def ws_analyze_realtime(websocket: WebSocket):
                 _last_arcface_ok    = True
                 _last_similarity    = 1.0
                 _n_candidates       = 1
+                # ← AJOUT : évite de réutiliser un résultat MediaPipe
+                # de l'ancienne session/candidat après un reset.
+                _last_face_analysis_result = None
+                _last_face_boost    = {}
                 _last_emotion       = 'neutral'
                 _last_confidence    = 0.5
                 _last_metrics       = {}
@@ -4002,11 +4044,28 @@ async def ws_analyze_realtime(websocket: WebSocket):
                 }
                 await websocket.send_json(
                     convert_to_serializable(quick_result))
-            # ← RUN_IN_EXECUTOR (chemin principal) : analyse MediaPipe
-            # (regard, clignement, posture...), appelée à chaque frame.
-            face_analysis_result = await _run_sync(
-                loop, executor, face_analyzer.analyze, img)
-            face_boost = face_analyzer.get_boost_params(face_analysis_result)
+            # ← OPTIMISATION PERF (temps réel uniquement) : MediaPipe
+            # (FaceLandmarker + PoseLandmarker, 2 inférences) ne tourne
+            # plus qu'UNE FRAME SUR DEUX, au lieu de chaque frame. Sur
+            # les frames intermédiaires, on réutilise le dernier
+            # résultat calculé. Justifié par la nature du signal :
+            # regard, clignement, posture, tension et symétrie évoluent
+            # nettement plus lentement d'une frame à l'autre que
+            # l'expression faciale — contrairement à l'émotion (ViT) et
+            # à l'identité (ArcFace), qui elles restent calculées à
+            # CHAQUE frame pour ne perdre aucune précision temporelle
+            # sur ce qui compte le plus. Réduit d'environ moitié le
+            # coût CPU de cette étape spécifique dans le flux temps
+            # réel, sans dégrader l'émotion ni l'identité.
+            if _frame_counter % 2 == 0:
+                face_analysis_result = await _run_sync(
+                    loop, executor, face_analyzer.analyze, img)
+                face_boost = face_analyzer.get_boost_params(face_analysis_result)
+                _last_face_analysis_result = face_analysis_result
+                _last_face_boost = face_boost
+            else:
+                face_analysis_result = _last_face_analysis_result
+                face_boost = _last_face_boost
 
             # ← RUN_IN_EXECUTOR (chemin principal) : deuxième inférence
             # ViT (probabilités brutes pour calculate_candidate_metrics,
