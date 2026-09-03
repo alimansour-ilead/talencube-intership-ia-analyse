@@ -498,16 +498,16 @@ video_processing_executor =ThreadPoolExecutor(max_workers=2)
 # réguliers — jamais plus une seule requête bloquante de plusieurs
 # minutes.
 #
-# ← FIX : l'état des jobs (create_job/complete_job/get_job) est
-# désormais stocké dans Redis (voir app_embedding_cache.py), pas dans
-# un dictionnaire Python local. Avec plusieurs répliques Railway, le
-# job était créé sur UNE réplique, mais le polling suivant de Java
-# pouvait atterrir sur une AUTRE réplique qui ne connaissait rien de
-# ce job_id — 404 immédiat, traité à tort par Java comme un résultat
-# final ("NOT_FOUND"), au lieu du vrai résultat de l'analyse. Redis
-# rend l'état visible par toutes les répliques, peu importe laquelle
-# a créé le job ou laquelle répond au polling.
-from app_embedding_cache import create_job, complete_job, get_job
+# ⚠️ RETOUR EN ARRIÈRE TEMPORAIRE (à réappliquer après diagnostic) :
+# la migration vers Redis (create_job/complete_job/get_job) a
+# provoqué une boucle de crash au démarrage en production
+# ("Attribute app not found in module main"). Revenu au dictionnaire
+# local le temps de comprendre la vraie cause avec le traceback
+# complet — ce dictionnaire garde le bug de réplique croisée (404 si
+# le polling atterrit sur une autre réplique que celle ayant créé le
+# job), mais au moins le service démarre correctement.
+_async_video_jobs: dict = {}   # job_id → "PROCESSING" ou (payload, status_code)
+_async_video_jobs_lock = threading.Lock()
 
 print("=" * 60)
 print("TOUS LES MODELES SONT PRETS!")
@@ -1576,7 +1576,8 @@ async def extract_candidates_preview(file: UploadFile = File(...)):
 
     import uuid as _uuid
     job_id = str(_uuid.uuid4())
-    create_job(job_id)
+    with _async_video_jobs_lock:
+        _async_video_jobs[job_id] = "PROCESSING"
 
     def _run_and_store():
         try:
@@ -1584,7 +1585,8 @@ async def extract_candidates_preview(file: UploadFile = File(...)):
                 file_bytes, file.filename)
         except Exception as e:
             payload, status_code = ({'success': False, 'error': str(e)}, 500)
-        complete_job(job_id, payload, status_code)
+        with _async_video_jobs_lock:
+            _async_video_jobs[job_id] = (payload, status_code)
 
     loop.run_in_executor(video_processing_executor, _run_and_store)
 
@@ -2805,7 +2807,8 @@ async def analyze_video(
 
     import uuid as _uuid
     job_id = str(_uuid.uuid4())
-    create_job(job_id)
+    with _async_video_jobs_lock:
+        _async_video_jobs[job_id] = "PROCESSING"
 
     def _run_and_store():
         try:
@@ -2813,7 +2816,8 @@ async def analyze_video(
                 file_bytes, file.filename, target_x, target_y, embedding_key)
         except Exception as e:
             payload, status_code = ({'success': False, 'error': str(e)}, 500)
-        complete_job(job_id, payload, status_code)
+        with _async_video_jobs_lock:
+            _async_video_jobs[job_id] = (payload, status_code)
 
     # ← Soumis au pool existant, comme avant — seule la RÉPONSE HTTP
     # change (immédiate maintenant), pas la façon dont l'analyse
@@ -2826,7 +2830,8 @@ async def analyze_video(
 
 @app.get("/analyze_video_result/{job_id}")
 async def analyze_video_result(job_id: str):
-    entry = get_job(job_id)
+    with _async_video_jobs_lock:
+        entry = _async_video_jobs.get(job_id)
 
     if entry is None:
         return JSONResponse({"status": "NOT_FOUND"}, status_code=404)
@@ -2834,10 +2839,12 @@ async def analyze_video_result(job_id: str):
     if entry == "PROCESSING":
         return JSONResponse({"status": "PROCESSING"}, status_code=202)
 
-    # get_job() a déjà retiré l'entrée de Redis après cette lecture
-    # (usage unique), pour ne pas accumuler indéfiniment les jobs
-    # terminés.
+    # ← Résultat prêt : on le retire du cache après lecture (usage
+    # unique), pour ne pas accumuler indéfiniment les jobs terminés
+    # en mémoire.
     payload, status_code = entry
+    with _async_video_jobs_lock:
+        _async_video_jobs.pop(job_id, None)
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -3023,6 +3030,38 @@ async def ws_analyze_realtime(websocket: WebSocket):
     _memo_fails = 0
     audio_path  = None
 
+    # ← AJOUT : fenêtre glissante des derniers résultats de
+    # vérification (True=réussi, False=échoué), pour une décision
+    # "candidat absent" basée sur la TENDANCE récente plutôt que sur
+    # un compteur d'échecs strictement consécutifs. Problème que ça
+    # corrige : avec l'ancienne logique, un seul succès isolé (même
+    # par coïncidence, sur une frame bruitée) au milieu d'une série
+    # d'échecs remettait le compteur à zéro — si la personne était
+    # réellement partie mais qu'une frame produisait par hasard un
+    # score de justesse, le système ne déclarait JAMAIS "absent",
+    # restant bloqué indéfiniment sur "vérification en cours". La
+    # fenêtre glissante tolère quelques succès isolés dans une
+    # tendance globalement défaillante, réagissant plus vite ET plus
+    # correctement à une vraie absence, sans redevenir plus sensible
+    # au bruit ponctuel (un seul échec isolé dans une fenêtre par
+    # ailleurs positive ne fait pas basculer la décision).
+    import collections as _collections_module
+    _verify_history = _collections_module.deque(maxlen=8)
+    _VERIFY_WINDOW_MIN_SAMPLES = 5   # pas de décision avant d'avoir assez de données
+    _VERIFY_WINDOW_ABSENT_RATIO = 0.7  # 70% d'échecs récents → absent confirmé
+
+    def _verify_window_says_absent() -> bool:
+        """
+        Retourne True si la tendance récente confirme une vraie
+        absence (assez d'échecs récents, proportion suffisante) —
+        au lieu d'exiger que TOUTES les tentatives récentes échouent
+        consécutivement sans exception.
+        """
+        if len(_verify_history) < _VERIFY_WINDOW_MIN_SAMPLES:
+            return False
+        fail_ratio = 1.0 - (sum(_verify_history) / len(_verify_history))
+        return fail_ratio >= _VERIFY_WINDOW_ABSENT_RATIO
+
     _initial_zone_cx: Optional[float] = None
     _initial_zone_cy: Optional[float] = None
     _embedding_key: Optional[str] = None
@@ -3157,7 +3196,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
         locked_cx = cx; locked_cy = cy
         _needs_lock = False
         _cache_key  = None; _cache_sim = None
-        _rej_count  = 0; _memo_fails = 0
+        _rej_count  = 0; _memo_fails = 0; _verify_history.clear()
 
         print(f"[WS] ✅ Lock id={bt.track_id} ({cx:.0f},{cy:.0f}) "
               f"sim={best_sim:.3f} first={first_lock} dist={best_dist:.0f}px")
@@ -3273,7 +3312,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
                 _needs_lock         = False
                 _cache_key          = None
                 _cache_sim          = None
-                _rej_count          = 0
+                _rej_count          = 0; _verify_history.clear()
                 _memo_fails         = 0
                 _initial_zone_cx    = None
                 _initial_zone_cy    = None
@@ -3371,7 +3410,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
             if tm.state == State.ABANDONED:
                 tm.reset_tracking()
                 _cache_key = None; _cache_sim = None
-                _rej_count = 0; _memo_fails = 0
+                _rej_count = 0; _memo_fails = 0; _verify_history.clear()
 
             # ← AJOUT : restauration rapide depuis l'état de tracking
             # partagé (Redis), AVANT le flux classique ci-dessous.
@@ -3817,7 +3856,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
                             locked_cx = cx_k; locked_cy = cy_k
                             _initial_zone_cx = cx_k; _initial_zone_cy = cy_k
                             tm.zone.define(cx_k, cy_k, W, H)
-                            _cache_key = None; _cache_sim = None; _rej_count = 0
+                            _cache_key = None; _cache_sim = None; _rej_count = 0; _verify_history.clear()
                             found_dark = True
                             print(f"[WS] ✅ Sorti zone {zone_label} "
                                   f"({cx_k:.0f},{cy_k:.0f}) "
@@ -3966,6 +4005,12 @@ async def ws_analyze_realtime(websocket: WebSocket):
                   f"sim={similarity:.3f} seuil={dynamic_threshold_ws:.2f} "
                   f"{'✅' if is_candidate else '❌'}")
 
+            # ← AJOUT : alimente la fenêtre glissante sur chaque
+            # vérification réussie — voir _verify_window_says_absent()
+            # plus haut pour l'explication complète.
+            if is_candidate:
+                _verify_history.append(True)
+
 
             if not is_candidate:
                 # ← AJOUT : quand l'image est déjà signalée comme
@@ -4009,9 +4054,25 @@ async def ws_analyze_realtime(websocket: WebSocket):
                 _rej_count += 1
 
                 total_failure = (similarity == 0.0)
-                _tol = (CFG.TOTAL_FAILURE_TOLERANCE if total_failure
-                        else (5 if _n_candidates == 1 else 3))
-                if _rej_count < _tol:
+
+                if total_failure:
+                    # ← Cas distinct : échec total de détection (frame
+                    # complètement noire/invalide), pas un désaccord
+                    # d'identité — garde son propre chemin rapide
+                    # existant (CFG.TOTAL_FAILURE_TOLERANCE, très bas),
+                    # non concerné par la fenêtre glissante.
+                    _tol = CFG.TOTAL_FAILURE_TOLERANCE
+                    _window_says_absent = (_rej_count >= _tol)
+                else:
+                    # ← AJOUT : décision basée sur la fenêtre glissante
+                    # au lieu d'exiger que TOUTES les tentatives
+                    # récentes échouent consécutivement — voir
+                    # _verify_window_says_absent() pour l'explication.
+                    _verify_history.append(False)
+                    _tol = (5 if _n_candidates == 1 else 3)  # gardé pour l'affichage
+                    _window_says_absent = _verify_window_says_absent()
+
+                if not _window_says_absent:
                     print(f"[WS] ⚠️ Échec temporaire "
                           f"({_rej_count}/{_tol}) sim={similarity:.3f} — "
                           f"attente confirmation "
@@ -4080,7 +4141,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
                                       float(tight_r[2]),float(tight_r[3])]
                             tm.force_track(bt_r.track_id, bbox_r)
                             locked_cx = cx_r; locked_cy = cy_r
-                            _rej_count = 0
+                            _rej_count = 0; _verify_history.clear()
                             tm.zone.define(cx_r, cy_r, W, H)
                             _initial_zone_cx = cx_r; _initial_zone_cy = cy_r
                             result["tracking"]["bbox"]          = bbox_r
@@ -4165,7 +4226,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
                         _process_audio_async(audio_b64, websocket, loop))
                 continue
 
-            _rej_count = 0
+            _rej_count = 0; _verify_history.clear()
             # ← RUN_IN_EXECUTOR (chemin principal) : mise à jour de la
             # référence ArcFace, appelée à chaque frame validée.
             await _run_sync(loop, executor, tm.identity.update,
