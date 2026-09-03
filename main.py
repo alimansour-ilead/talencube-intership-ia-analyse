@@ -1224,12 +1224,25 @@ def _extract_candidates_preview_sync(file_bytes: bytes, filename: str):
     ici, puisqu'on est hors du contexte async/FastAPI dans ce thread.
     """
     import time
+    import uuid as _uuid_module
     tmp_path = fixed_path = None
     try:
+        # ← FIX : identifiant unique ajouté au nom du fichier temporaire.
+        # Avant, le chemin était construit UNIQUEMENT à partir du nom
+        # original du fichier (ex: preview_zoom_KERAVAL.mp4) — si deux
+        # extractions du MÊME fichier tournaient en même temps sur la
+        # même réplique (possible depuis que le pool dédié à
+        # l'extraction autorise plusieurs extractions en parallèle),
+        # elles écrivaient/lisaient/supprimaient le MÊME chemin sur
+        # le disque, se corrompant mutuellement. Symptôme observé :
+        # échec quasi instantané (~2s au lieu de ~30-35s), cohérent
+        # avec une lecture d'un fichier vide/corrompu plutôt qu'un
+        # vrai scan de la vidéo.
+        _unique = _uuid_module.uuid4().hex[:8]
         tmp_path   = os.path.join(tempfile.gettempdir(),
-                                  f"preview_{filename}")
+                                  f"preview_{_unique}_{filename}")
         fixed_path = os.path.join(tempfile.gettempdir(),
-                                  f"fixed_preview_{filename}")
+                                  f"fixed_preview_{_unique}_{filename}")
         with open(tmp_path, "wb") as buf:
             buf.write(file_bytes)
 
@@ -1616,9 +1629,14 @@ def _analyze_video_sync(file_bytes: bytes, filename: str,
                         embedding_key: Optional[str] = None):
     
     import time
+    import uuid as _uuid_module
     try:
         start_time = time.time()
-        tmp_path   = os.path.join(tempfile.gettempdir(), filename)
+        # ← FIX : même correctif que _extract_candidates_preview_sync —
+        # identifiant unique pour éviter toute collision de fichier
+        # temporaire entre deux analyses concurrentes du même fichier.
+        _unique    = _uuid_module.uuid4().hex[:8]
+        tmp_path   = os.path.join(tempfile.gettempdir(), f"{_unique}_{filename}")
         with open(tmp_path, "wb") as buf:
             buf.write(file_bytes)
 
