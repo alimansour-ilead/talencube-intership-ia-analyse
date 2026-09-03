@@ -31,6 +31,7 @@ import imageio_ffmpeg as ffmpeg_pkg
 from fastapi import Form as FastAPIForm
 import subprocess
 import asyncio
+import threading
 import functools
 import base64
 from concurrent.futures import ThreadPoolExecutor
@@ -462,7 +463,7 @@ class AnalysisHistory:
 
 
 history_manager = AnalysisHistory()
-executor        = ThreadPoolExecutor(max_workers=4)
+executor        = ThreadPoolExecutor(max_workers=6)
 
 # ← CORRECTION : pool DÉDIÉ, séparé, pour le traitement vidéo lourd
 # (extract_candidates_preview, analyze_video). Avant cette séparation,
@@ -475,6 +476,29 @@ executor        = ThreadPoolExecutor(max_workers=4)
 # Avec un pool séparé, le traitement vidéo lourd ne peut plus jamais
 # affamer le temps réel, quelle que soit sa durée.
 video_processing_executor =ThreadPoolExecutor(max_workers=2)
+
+# ═══════════════════════════════════════════════════════════════════
+# ANALYSE ASYNC (Java ↔ Python) — évite le 502 sur les grosses vidéos
+# ═══════════════════════════════════════════════════════════════════
+# ← AJOUT : jusqu'ici, /analyze_video traitait toute la vidéo AVANT de
+# répondre — une seule requête HTTP restant ouverte potentiellement
+# plusieurs minutes. Observé en production : un 502 Bad Gateway après
+# exactement 5 minutes sur une vidéo de 109 Mo, cohérent avec un
+# timeout de proxy intermédiaire (Railway ou autre) qui coupe toute
+# requête HTTP trop longue, quelle que soit la configuration du
+# timeout côté client (Java). Cette limite n'est pas contournable en
+# augmentant un timeout côté code — la seule vraie solution est de ne
+# plus jamais laisser une requête HTTP ouverte plus de quelques
+# secondes, exactement le même principe déjà utilisé entre Angular et
+# Java (finalize-upload → analyze-video-result).
+#
+# /analyze_video répond désormais IMMÉDIATEMENT avec un identifiant ;
+# l'analyse tourne en arrière-plan ; Java récupère le résultat via
+# /analyze_video_result/{job_id}, en interrogeant à intervalles
+# réguliers — jamais plus une seule requête bloquante de plusieurs
+# minutes.
+_async_video_jobs: dict = {}   # job_id → "PROCESSING" ou (payload, status_code)
+_async_video_jobs_lock = threading.Lock()
 
 print("=" * 60)
 print("TOUS LES MODELES SONT PRETS!")
@@ -1519,17 +1543,33 @@ def _extract_candidates_preview_sync(file_bytes: bytes, filename: str):
 
 @app.post("/extract_candidates_preview")
 async def extract_candidates_preview(file: UploadFile = File(...)):
-    # ← PATCH ANTI-BLOCAGE : seule la lecture du fichier uploadé (I/O
-    # réseau, déjà non-bloquante) reste dans la coroutine. Tout le
-    # reste (FFmpeg, décodage, YOLO, ArcFace) part dans un thread via
-    # run_in_executor — la boucle asyncio reste libre pendant ce temps.
+    # ← PATCH ANTI-BLOCAGE + ASYNC : même principe que /analyze_video —
+    # répond immédiatement avec un job_id au lieu d'attendre la fin
+    # complète du traitement sur cette requête. Évite tout risque de
+    # 502 (timeout de proxy intermédiaire) si l'extraction prend
+    # exceptionnellement plus de temps que prévu (connexion lente,
+    # fichier volumineux à recevoir).
     file_bytes = await file.read()
     loop = asyncio.get_running_loop()
-    payload, status_code = await loop.run_in_executor(
-        video_processing_executor, _extract_candidates_preview_sync,
-        file_bytes, file.filename
-    )
-    return JSONResponse(payload, status_code=status_code)
+
+    import uuid as _uuid
+    job_id = str(_uuid.uuid4())
+    with _async_video_jobs_lock:
+        _async_video_jobs[job_id] = "PROCESSING"
+
+    def _run_and_store():
+        try:
+            payload, status_code = _extract_candidates_preview_sync(
+                file_bytes, file.filename)
+        except Exception as e:
+            payload, status_code = ({'success': False, 'error': str(e)}, 500)
+        with _async_video_jobs_lock:
+            _async_video_jobs[job_id] = (payload, status_code)
+
+    loop.run_in_executor(video_processing_executor, _run_and_store)
+
+    return JSONResponse({"job_id": job_id, "status": "PROCESSING"},
+                         status_code=202)
 
 
 @app.post("/analyze_video_from_url")
@@ -2737,10 +2777,47 @@ async def analyze_video(
 ):
     file_bytes = await file.read()
     loop = asyncio.get_running_loop()
-    payload, status_code = await loop.run_in_executor(
-        video_processing_executor, _analyze_video_sync,
-        file_bytes, file.filename, target_x, target_y, embedding_key
-    )
+
+    import uuid as _uuid
+    job_id = str(_uuid.uuid4())
+    with _async_video_jobs_lock:
+        _async_video_jobs[job_id] = "PROCESSING"
+
+    def _run_and_store():
+        try:
+            payload, status_code = _analyze_video_sync(
+                file_bytes, file.filename, target_x, target_y, embedding_key)
+        except Exception as e:
+            payload, status_code = ({'success': False, 'error': str(e)}, 500)
+        with _async_video_jobs_lock:
+            _async_video_jobs[job_id] = (payload, status_code)
+
+    # ← Soumis au pool existant, comme avant — seule la RÉPONSE HTTP
+    # change (immédiate maintenant), pas la façon dont l'analyse
+    # elle-même s'exécute.
+    loop.run_in_executor(video_processing_executor, _run_and_store)
+
+    return JSONResponse({"job_id": job_id, "status": "PROCESSING"},
+                         status_code=202)
+
+
+@app.get("/analyze_video_result/{job_id}")
+async def analyze_video_result(job_id: str):
+    with _async_video_jobs_lock:
+        entry = _async_video_jobs.get(job_id)
+
+    if entry is None:
+        return JSONResponse({"status": "NOT_FOUND"}, status_code=404)
+
+    if entry == "PROCESSING":
+        return JSONResponse({"status": "PROCESSING"}, status_code=202)
+
+    # ← Résultat prêt : on le retire du cache après lecture (usage
+    # unique), pour ne pas accumuler indéfiniment les jobs terminés
+    # en mémoire.
+    payload, status_code = entry
+    with _async_video_jobs_lock:
+        _async_video_jobs.pop(job_id, None)
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -4151,17 +4228,19 @@ async def ws_analyze_realtime(websocket: WebSocket):
                     convert_to_serializable(quick_result))
             # ← OPTIMISATION PERF (temps réel uniquement) : MediaPipe
             # (FaceLandmarker + PoseLandmarker, 2 inférences) ne tourne
-            # plus qu'UNE FRAME SUR DEUX, au lieu de chaque frame. Sur
-            # les frames intermédiaires, on réutilise le dernier
-            # résultat calculé. Justifié par la nature du signal :
-            # regard, clignement, posture, tension et symétrie évoluent
+            # qu'UNE FRAME SUR DEUX, au lieu de chaque frame. Sur les
+            # frames intermédiaires, on réutilise le dernier résultat
+            # calculé. Justifié par la nature du signal : regard,
+            # clignement, posture, tension et symétrie évoluent
             # nettement plus lentement d'une frame à l'autre que
             # l'expression faciale — contrairement à l'émotion (ViT) et
             # à l'identité (ArcFace), qui elles restent calculées à
             # CHAQUE frame pour ne perdre aucune précision temporelle
-            # sur ce qui compte le plus. Réduit d'environ moitié le
-            # coût CPU de cette étape spécifique dans le flux temps
-            # réel, sans dégrader l'émotion ni l'identité.
+            # sur ce qui compte le plus. Décision confirmée après
+            # comparatif explicite : meilleur compromis entre précision
+            # réelle (imperceptible sur ce signal) et stabilité du
+            # système (moins de risque de saturation CPU déjà mesuré
+            # en production).
             if _frame_counter % 2 == 0:
                 face_analysis_result = await _run_sync(
                     loop, executor, face_analyzer.analyze, img)
