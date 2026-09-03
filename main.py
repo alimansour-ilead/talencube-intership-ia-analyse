@@ -534,9 +534,26 @@ def compute_dynamic_threshold(brightness: float, blur: float) -> float:
     else:
         light_factor = 0.0
 
+    # ← AJOUT : le flou ÉLEVÉ (pas seulement bas) dégrade aussi la
+    # qualité de l'embedding ArcFace. Confirmé en production : une
+    # série de frames avec une similarité quasi nulle/négative
+    # coïncidait exactement avec un flou anormalement haut (190-233,
+    # contre 76-159 sur les frames qui fonctionnaient normalement),
+    # pendant que la luminosité restait par ailleurs tout à fait
+    # normale (99-105) — un cas que cette fonction ne détectait pas
+    # du tout auparavant, puisqu'elle ne traitait que le flou BAS
+    # (image trop floue) comme problématique, jamais le flou haut
+    # (probablement un flou de mouvement ou un artefact de
+    # compression webcam faussant la mesure). Même logique
+    # symétrique que la luminosité ci-dessus (basse ET haute
+    # traitées).
     if blur < 50:
         blur_factor = 0.08
     elif blur < 100:
+        blur_factor = 0.04
+    elif blur > 200:
+        blur_factor = 0.08
+    elif blur > 170:
         blur_factor = 0.04
     else:
         blur_factor = 0.0
@@ -4031,7 +4048,14 @@ async def ws_analyze_realtime(websocket: WebSocket):
                 # jamais élargir l'acceptation, seulement ignorer les
                 # tentatives non concluantes).
                 _quality_degraded = dynamic_threshold_ws < 0.38
-                if _quality_degraded and similarity > 0.0:
+                # ← FIX : la condition excluait à tort les valeurs
+                # négatives — confirmé en production (deux frames avec
+                # sim=-0.010, seuil déjà abaissé à 0.34, comptaient à
+                # tort comme de vrais échecs au lieu d'être ignorées).
+                # Une similarité négative est tout aussi inexploitable
+                # qu'une similarité proche de zéro sur une frame de
+                # qualité dégradée — même traitement pour les deux.
+                if _quality_degraded:
                     print(f"[WS] 🌫️ Frame ignorée (qualité dégradée, "
                           f"seuil abaissé à {dynamic_threshold_ws:.2f}, "
                           f"sim={similarity:.3f}) — pas comptée contre "
