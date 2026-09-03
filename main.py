@@ -2930,6 +2930,12 @@ async def ws_analyze_realtime(websocket: WebSocket):
     _initial_zone_cy: Optional[float] = None
     _embedding_key: Optional[str] = None
     _pending_embedding: Optional[tuple] = None
+    # ← AJOUT : contrairement à _embedding_key (remis à None après
+    # consommation), cette variable garde la clé stable pendant toute
+    # la durée de la session — nécessaire pour sauvegarder/nettoyer
+    # l'état de tracking partagé (Redis) à n'importe quel moment de
+    # la session, pas seulement au moment de la réception initiale.
+    _active_tracking_key: Optional[str] = None
 
     async def _send_absent(reason: str, bbox, sim: float = 0.0):
         # ← PATCH v7.0 (#19) : expose la cause diagnostiquée plutôt
@@ -3176,6 +3182,15 @@ async def ws_analyze_realtime(websocket: WebSocket):
                 _initial_zone_cy    = None
                 _embedding_key      = None
                 _pending_embedding  = None
+                # ← AJOUT : nettoie l'état de tracking partagé associé
+                # à l'ancien candidat — sans ça, un futur embedding_key
+                # (nouveau candidat) pourrait par erreur ne rien
+                # trouver (attendu), mais surtout on évite de laisser
+                # traîner un état périmé inutilement en mémoire Redis.
+                if _active_tracking_key:
+                    from app_embedding_cache import clear_tracking_state
+                    clear_tracking_state(_active_tracking_key)
+                _active_tracking_key = None
                 _metrics_history_ws.clear()
                 await websocket.send_json({"success": True, "type": "reset_ack"})
                 continue
@@ -3191,6 +3206,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
 
             if embedding_key:
                 _embedding_key = embedding_key
+                _active_tracking_key = embedding_key
                 print(f"[WS] 🔑 embedding_key reçu: {embedding_key}")
 
             if not frame_b64:
@@ -3259,6 +3275,33 @@ async def ws_analyze_realtime(websocket: WebSocket):
                 tm.reset_tracking()
                 _cache_key = None; _cache_sim = None
                 _rej_count = 0; _memo_fails = 0
+
+            # ← AJOUT : restauration rapide depuis l'état de tracking
+            # partagé (Redis), AVANT le flux classique ci-dessous.
+            # Contrairement à get_embedding() (cache à usage unique,
+            # pour le tout premier transfert extraction→temps réel),
+            # get_tracking_state() n'est jamais supprimé après lecture
+            # — plusieurs reconnexions successives peuvent toutes le
+            # relire. Si un état existe déjà (le candidat avait déjà
+            # été mémorisé, potentiellement par une AUTRE réplique
+            # avant une coupure réseau), on restaure l'identité et la
+            # zone directement, en quelques millisecondes, au lieu de
+            # relancer toute la mémorisation initiale (plusieurs
+            # secondes) — c'est ce qui rend une reconnexion silencieuse
+            # invisible pour l'utilisateur, au lieu de réafficher
+            # "candidat absent" ou de verrouiller la mauvaise personne
+            # le temps que la mémorisation reparte de zéro.
+            if (_embedding_key is not None and not tm.identity.memorized):
+                from app_embedding_cache import get_tracking_state
+                _restored_state = get_tracking_state(_embedding_key)
+                if _restored_state is not None:
+                    _restore_ok = tm.identity.import_ref(_restored_state.get("ref"))
+                    if _restore_ok:
+                        tm.zone.import_zone(_restored_state.get("zone"))
+                        print(f"[WS] ⚡ État de suivi restauré depuis Redis "
+                              f"(reconnexion transparente) — mémorisation ignorée")
+                        _embedding_key = None
+                        _pending_embedding = None
 
             if (_embedding_key is not None and
                     _pending_embedding is None and
@@ -3546,6 +3589,17 @@ async def ws_analyze_realtime(websocket: WebSocket):
                                        n_faces=len(raw_faces))
                         print(f"[WS] ✅ Zone FIXE: ({cx_mem:.0f},{cy_mem:.0f}) "
                               f"face={x2-x1:.0f}x{y2-y1:.0f}px")
+                        # ← AJOUT : sauvegarde l'état de tracking fraîchement
+                        # établi dans Redis, pour qu'une future reconnexion
+                        # (potentiellement sur une autre réplique après une
+                        # coupure réseau) puisse le restaurer instantanément
+                        # au lieu de refaire toute cette mémorisation.
+                        if _active_tracking_key:
+                            from app_embedding_cache import store_tracking_state
+                            store_tracking_state(
+                                _active_tracking_key,
+                                tm.identity.export_ref(),
+                                tm.zone._zone)
                         ok_t, sim_t = tm.identity.verify(face_img=face_img)
                         print(f"[WS] Auto-test: sim={sim_t:.3f} "
                               f"{'✅' if ok_t else '❌'}")
@@ -3982,6 +4036,19 @@ async def ws_analyze_realtime(websocket: WebSocket):
             await _run_sync(loop, executor, tm.identity.update,
                             face_img=face_img_padded)
             locked_cx = cx_cur; locked_cy = cy_cur
+
+            # ← AJOUT : rafraîchit périodiquement l'état de tracking
+            # partagé (toutes les 30 frames, pas à chaque frame — pour
+            # ne pas surcharger Redis inutilement). Garde l'état
+            # utilisable par une autre réplique raisonnablement à jour
+            # tout au long de la session, pas seulement au moment de
+            # la mémorisation initiale.
+            if _active_tracking_key and _frame_counter % 30 == 0:
+                from app_embedding_cache import store_tracking_state
+                store_tracking_state(
+                    _active_tracking_key,
+                    tm.identity.export_ref(),
+                    tm.zone._zone)
 
             if tm.zone.defined and tm.zone._zone is not None:
                 old_cx = tm.zone._zone.get('cx', cx_cur)

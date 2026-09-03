@@ -94,3 +94,81 @@ def clear_old_entries(max_size: int = 50) -> None:
     de purge manuelle par taille de dictionnaire.
     """
     pass
+
+
+# ═══════════════════════════════════════════════════════════════════
+# ÉTAT DE SUIVI TEMPS RÉEL — persistance entre reconnexions
+# ═══════════════════════════════════════════════════════════════════
+# ← AJOUT : distinct du cache d'embedding ci-dessus (qui est à usage
+# UNIQUE, pour le transfert extraction→première connexion). Ici, on
+# persiste l'état COMPLET du suivi d'un candidat (référence ArcFace +
+# zone de position) pendant toute la durée d'une session temps réel,
+# mis à jour périodiquement, et LU (jamais supprimé automatiquement)
+# à chaque connexion.
+#
+# Pourquoi c'est nécessaire : avec plusieurs replicas Railway, une
+# coupure réseau ou un redémarrage peut faire atterrir la reconnexion
+# automatique de Java sur une réplique DIFFERENTE de celle qui avait
+# mémorisé le candidat. Sans cet état partagé, la nouvelle réplique
+# ne connaît rien du candidat — elle le marque "absent" ou verrouille
+# la mauvaise personne, le temps de refaire toute la mémorisation
+# initiale (5 frames, plusieurs secondes). Avec cet état dans Redis,
+# la nouvelle réplique restaure l'identité déjà connue en quelques
+# millisecondes, rendant la reconnexion invisible pour l'utilisateur.
+_TRACKING_STATE_TTL_SECONDS = 30 * 60  # 30 min — large marge sur la durée d'un entretien
+_TRACKING_KEY_PREFIX = "tracking_state:"
+
+
+def store_tracking_state(session_key: str, ref_embedding: np.ndarray,
+                         zone: Optional[dict] = None) -> None:
+    """
+    Sauvegarde/rafraîchit l'état de suivi d'un candidat (référence
+    ArcFace + zone de position). Appelée après la mémorisation
+    initiale, puis périodiquement pendant les mises à jour, pour que
+    l'état reste disponible en cas de reconnexion sur une autre
+    réplique.
+    """
+    if _redis_client is None:
+        return
+    try:
+        data = pickle.dumps({"ref": ref_embedding, "zone": zone})
+        _redis_client.setex(
+            _TRACKING_KEY_PREFIX + session_key,
+            _TRACKING_STATE_TTL_SECONDS, data)
+    except Exception as e:
+        print(f"[TrackingState] Erreur store: {e}")
+
+
+def get_tracking_state(session_key: str) -> Optional[dict]:
+    """
+    Récupère l'état de suivi déjà mémorisé pour cette clé, SANS le
+    supprimer (contrairement à get_embedding) — plusieurs reconnexions
+    successives doivent pouvoir le relire tant que la session dure.
+    Retourne None si aucun état n'existe encore (première connexion
+    pour ce candidat).
+    """
+    if _redis_client is None:
+        return None
+    try:
+        data = _redis_client.get(_TRACKING_KEY_PREFIX + session_key)
+        if data is None:
+            return None
+        return pickle.loads(data)
+    except Exception as e:
+        print(f"[TrackingState] Erreur get: {e}")
+        return None
+
+
+def clear_tracking_state(session_key: str) -> None:
+    """
+    Supprime explicitement l'état de suivi — à appeler sur un reset
+    (changement de candidat) ou une vraie fin de session, pour ne pas
+    laisser un état périmé être restauré par erreur sur une future
+    connexion sans rapport.
+    """
+    if _redis_client is None:
+        return
+    try:
+        _redis_client.delete(_TRACKING_KEY_PREFIX + session_key)
+    except Exception as e:
+        print(f"[TrackingState] Erreur clear: {e}")

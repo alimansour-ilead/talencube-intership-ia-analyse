@@ -326,6 +326,16 @@ class ZoneManager:
         self._face_h  = None
         self._n_faces = 1
 
+    def import_zone(self, zone: dict) -> None:
+        """
+        ← AJOUT : restaure une zone déjà définie (venant d'une autre
+        réplique via l'état de tracking partagé), sans repasser par
+        define() qui recalcule les marges — la zone était déjà
+        correctement calculée par la réplique d'origine.
+        """
+        if zone:
+            self._zone = zone
+
     @property
     def defined(self) -> bool:
         return self._zone is not None
@@ -876,6 +886,40 @@ class IdentityManager:
         self.candidate_embedding = None
         self._pending_updates = []
         print("[Identity] Reset complet")
+
+    # ← AJOUT : export/import de la référence mémorisée, pour la
+    # persistance inter-répliques (voir app_embedding_cache.
+    # store_tracking_state/get_tracking_state). export_ref() est
+    # appelée après une mémorisation réussie et périodiquement après
+    # chaque update() ; import_ref() est appelée à la connexion, avant
+    # de lancer une mémorisation complète, pour vérifier si un état
+    # déjà utilisable existe.
+    def export_ref(self):
+        """Retourne la référence mémorisée (ou None si pas encore prête)."""
+        if self._ref is None or self._memorizing:
+            return None
+        return self._ref.copy()
+
+    def import_ref(self, ref) -> bool:
+        """
+        Restaure une référence déjà mémorisée (venant d'une autre
+        réplique), sans refaire la mémorisation initiale. Retourne
+        True si la restauration a réussi.
+        """
+        if ref is None:
+            return False
+        try:
+            self._ref = np.asarray(ref, dtype=np.float32)
+            self._memorized  = True
+            self._memorizing = False
+            self.candidate_embedding = self._ref
+            self._embeddings = [self._ref]
+            print(f"[Identity] ✅ Référence restaurée depuis l'état partagé "
+                  f"(dim={self._ref.shape[0]}D) — mémorisation ignorée")
+            return True
+        except Exception as e:
+            print(f"[Identity] ⚠️ Échec restauration référence: {e}")
+            return False
 
     @property
     def memorized(self) -> bool:
