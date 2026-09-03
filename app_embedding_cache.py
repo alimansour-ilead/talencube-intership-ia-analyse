@@ -172,3 +172,81 @@ def clear_tracking_state(session_key: str) -> None:
         _redis_client.delete(_TRACKING_KEY_PREFIX + session_key)
     except Exception as e:
         print(f"[TrackingState] Erreur clear: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# JOBS ASYNCHRONES — analyse vidéo / extraction de candidat
+# ═══════════════════════════════════════════════════════════════════
+# ← AJOUT : remplace le dictionnaire Python en mémoire locale
+# (_async_video_jobs) utilisé par /analyze_video et
+# /extract_candidates_preview pour stocker l'état "PROCESSING" puis
+# le résultat final d'un job.
+#
+# Pourquoi c'était nécessaire : avec plusieurs répliques Railway, le
+# job est créé sur UNE réplique (celle qui a reçu la requête POST
+# initiale), mais la requête de polling suivante (GET .../result/
+# {job_id}, envoyée par Java toutes les 2-3s) peut atterrir sur une
+# AUTRE réplique — qui n'a jamais entendu parler de ce job_id dans
+# son propre dictionnaire local, renvoyant un 404 alors que le job
+# est peut-être toujours en cours (ou même déjà terminé) sur la
+# réplique d'origine. Java traitait ce 404 comme une réponse
+# définitive et arrêtait le polling, stockant {"status":"NOT_FOUND"}
+# comme si c'était le résultat réel de l'analyse.
+#
+# Avec Redis, n'importe quelle réplique peut créer, mettre à jour et
+# lire l'état d'un job — le 404 ne se produit plus jamais tant que le
+# job existe réellement.
+_JOB_TTL_SECONDS = 30 * 60  # 30 min — large marge sur les analyses les plus longues
+_JOB_KEY_PREFIX  = "async_job:"
+
+
+def create_job(job_id: str) -> None:
+    """Enregistre un nouveau job comme 'en cours de traitement'."""
+    if _redis_client is None:
+        return
+    try:
+        _redis_client.setex(_JOB_KEY_PREFIX + job_id, _JOB_TTL_SECONDS,
+                            pickle.dumps({"status": "PROCESSING"}))
+    except Exception as e:
+        print(f"[AsyncJob] Erreur create: {e}")
+
+
+def complete_job(job_id: str, payload: dict, status_code: int) -> None:
+    """Enregistre le résultat final d'un job (succès ou erreur)."""
+    if _redis_client is None:
+        return
+    try:
+        _redis_client.setex(_JOB_KEY_PREFIX + job_id, _JOB_TTL_SECONDS,
+                            pickle.dumps({
+                                "status": "DONE",
+                                "payload": payload,
+                                "status_code": status_code
+                            }))
+    except Exception as e:
+        print(f"[AsyncJob] Erreur complete: {e}")
+
+
+def get_job(job_id: str):
+    """
+    Retourne l'état d'un job :
+    - None si le job n'existe pas (jamais créé, ou expiré après 30 min)
+    - "PROCESSING" si le job est encore en cours
+    - (payload, status_code) si le job est terminé — l'entrée est
+      supprimée de Redis après cette lecture (usage unique, comme le
+      comportement d'origine du dictionnaire en mémoire).
+    """
+    if _redis_client is None:
+        return None
+    try:
+        key  = _JOB_KEY_PREFIX + job_id
+        data = _redis_client.get(key)
+        if data is None:
+            return None
+        entry = pickle.loads(data)
+        if entry["status"] == "PROCESSING":
+            return "PROCESSING"
+        _redis_client.delete(key)
+        return (entry["payload"], entry["status_code"])
+    except Exception as e:
+        print(f"[AsyncJob] Erreur get: {e}")
+        return None
