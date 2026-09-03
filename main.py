@@ -498,16 +498,18 @@ video_processing_executor =ThreadPoolExecutor(max_workers=2)
 # réguliers — jamais plus une seule requête bloquante de plusieurs
 # minutes.
 #
-# ⚠️ RETOUR EN ARRIÈRE TEMPORAIRE (à réappliquer après diagnostic) :
-# la migration vers Redis (create_job/complete_job/get_job) a
-# provoqué une boucle de crash au démarrage en production
-# ("Attribute app not found in module main"). Revenu au dictionnaire
-# local le temps de comprendre la vraie cause avec le traceback
-# complet — ce dictionnaire garde le bug de réplique croisée (404 si
-# le polling atterrit sur une autre réplique que celle ayant créé le
-# job), mais au moins le service démarre correctement.
-_async_video_jobs: dict = {}   # job_id → "PROCESSING" ou (payload, status_code)
-_async_video_jobs_lock = threading.Lock()
+# ← FIX (réappliqué) : l'état des jobs (create_job/complete_job/
+# get_job) est stocké dans Redis (voir app_embedding_cache.py), pas
+# dans un dictionnaire Python local. Avec plusieurs répliques Railway,
+# le job était créé sur UNE réplique, mais le polling suivant de Java
+# pouvait atterrir sur une AUTRE réplique qui ne connaissait rien de
+# ce job_id — 404 confirmé en production (GET .../analyze_video_result/
+# {job_id} → 404), traité à tort par Java comme un résultat final.
+# Une première tentative de ce correctif avait été temporairement
+# annulée suite à un crash au démarrage — cause identifiée depuis :
+# une erreur de copier-coller manuel lors de l'application du patch,
+# pas un défaut de cette logique. Réappliqué ici proprement.
+from app_embedding_cache import create_job, complete_job, get_job
 
 print("=" * 60)
 print("TOUS LES MODELES SONT PRETS!")
@@ -1576,8 +1578,7 @@ async def extract_candidates_preview(file: UploadFile = File(...)):
 
     import uuid as _uuid
     job_id = str(_uuid.uuid4())
-    with _async_video_jobs_lock:
-        _async_video_jobs[job_id] = "PROCESSING"
+    create_job(job_id)
 
     def _run_and_store():
         try:
@@ -1585,8 +1586,7 @@ async def extract_candidates_preview(file: UploadFile = File(...)):
                 file_bytes, file.filename)
         except Exception as e:
             payload, status_code = ({'success': False, 'error': str(e)}, 500)
-        with _async_video_jobs_lock:
-            _async_video_jobs[job_id] = (payload, status_code)
+        complete_job(job_id, payload, status_code)
 
     loop.run_in_executor(video_processing_executor, _run_and_store)
 
@@ -2807,8 +2807,7 @@ async def analyze_video(
 
     import uuid as _uuid
     job_id = str(_uuid.uuid4())
-    with _async_video_jobs_lock:
-        _async_video_jobs[job_id] = "PROCESSING"
+    create_job(job_id)
 
     def _run_and_store():
         try:
@@ -2816,8 +2815,7 @@ async def analyze_video(
                 file_bytes, file.filename, target_x, target_y, embedding_key)
         except Exception as e:
             payload, status_code = ({'success': False, 'error': str(e)}, 500)
-        with _async_video_jobs_lock:
-            _async_video_jobs[job_id] = (payload, status_code)
+        complete_job(job_id, payload, status_code)
 
     # ← Soumis au pool existant, comme avant — seule la RÉPONSE HTTP
     # change (immédiate maintenant), pas la façon dont l'analyse
@@ -2830,8 +2828,7 @@ async def analyze_video(
 
 @app.get("/analyze_video_result/{job_id}")
 async def analyze_video_result(job_id: str):
-    with _async_video_jobs_lock:
-        entry = _async_video_jobs.get(job_id)
+    entry = get_job(job_id)
 
     if entry is None:
         return JSONResponse({"status": "NOT_FOUND"}, status_code=404)
@@ -2839,12 +2836,10 @@ async def analyze_video_result(job_id: str):
     if entry == "PROCESSING":
         return JSONResponse({"status": "PROCESSING"}, status_code=202)
 
-    # ← Résultat prêt : on le retire du cache après lecture (usage
-    # unique), pour ne pas accumuler indéfiniment les jobs terminés
-    # en mémoire.
+    # get_job() a déjà retiré l'entrée de Redis après cette lecture
+    # (usage unique), pour ne pas accumuler indéfiniment les jobs
+    # terminés.
     payload, status_code = entry
-    with _async_video_jobs_lock:
-        _async_video_jobs.pop(job_id, None)
     return JSONResponse(payload, status_code=status_code)
 
 
