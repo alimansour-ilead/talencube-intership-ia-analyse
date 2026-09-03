@@ -3043,35 +3043,47 @@ async def ws_analyze_realtime(websocket: WebSocket):
     audio_path  = None
 
     # ← AJOUT : fenêtre glissante des derniers résultats de
-    # vérification (True=réussi, False=échoué), pour une décision
-    # "candidat absent" basée sur la TENDANCE récente plutôt que sur
-    # un compteur d'échecs strictement consécutifs. Problème que ça
-    # corrige : avec l'ancienne logique, un seul succès isolé (même
-    # par coïncidence, sur une frame bruitée) au milieu d'une série
-    # d'échecs remettait le compteur à zéro — si la personne était
-    # réellement partie mais qu'une frame produisait par hasard un
-    # score de justesse, le système ne déclarait JAMAIS "absent",
-    # restant bloqué indéfiniment sur "vérification en cours". La
-    # fenêtre glissante tolère quelques succès isolés dans une
-    # tendance globalement défaillante, réagissant plus vite ET plus
-    # correctement à une vraie absence, sans redevenir plus sensible
-    # au bruit ponctuel (un seul échec isolé dans une fenêtre par
-    # ailleurs positive ne fait pas basculer la décision).
+    # vérification, pour une décision "candidat absent" basée sur la
+    # TENDANCE récente plutôt que sur un compteur d'échecs strictement
+    # consécutifs. Problème que ça corrige : avec l'ancienne logique,
+    # un seul succès isolé (même par coïncidence, sur une frame
+    # bruitée) au milieu d'une série d'échecs remettait le compteur à
+    # zéro — si la personne était réellement partie mais qu'une frame
+    # produisait par hasard un score de justesse, le système ne
+    # déclarait JAMAIS "absent", restant bloqué indéfiniment sur
+    # "vérification en cours".
+    #
+    # ← AJUSTEMENT : fenêtre basée sur le TEMPS RÉEL écoulé (secondes),
+    # pas sur un nombre fixe de frames. Problème que ça corrige : les
+    # frames n'arrivent pas à un rythme parfaitement constant (réseau,
+    # charge du serveur qui varie selon le moment) — "les 8 dernières
+    # frames" représentait donc une durée réelle DIFFÉRENTE à chaque
+    # analyse (parfois 1s, parfois 4s), rendant le délai de détection
+    # d'absence incohérent d'un test à l'autre. Avec une fenêtre de
+    # temps fixe (2.5s), le délai de réaction reste cohérent, peu
+    # importe la vitesse d'arrivée des frames à ce moment précis.
     import collections as _collections_module
-    _verify_history = _collections_module.deque(maxlen=8)
-    _VERIFY_WINDOW_MIN_SAMPLES = 5   # pas de décision avant d'avoir assez de données
-    _VERIFY_WINDOW_ABSENT_RATIO = 0.7  # 70% d'échecs récents → absent confirmé
+    _verify_history = _collections_module.deque(maxlen=30)  # marge large, borné par le temps ci-dessous
+    _VERIFY_WINDOW_SECONDS = 2.5        # fenêtre de temps réel, pas un nombre de frames
+    _VERIFY_WINDOW_MIN_SAMPLES = 4      # pas de décision avant d'avoir assez de données
+    _VERIFY_WINDOW_ABSENT_RATIO = 0.7   # 70% d'échecs récents → absent confirmé
 
     def _verify_window_says_absent() -> bool:
         """
-        Retourne True si la tendance récente confirme une vraie
-        absence (assez d'échecs récents, proportion suffisante) —
-        au lieu d'exiger que TOUTES les tentatives récentes échouent
-        consécutivement sans exception.
+        Retourne True si la tendance récente (sur les 2.5 dernières
+        SECONDES, pas un nombre fixe de frames) confirme une vraie
+        absence — au lieu d'exiger que TOUTES les tentatives
+        consécutives échouent sans exception, et sans dépendre du
+        rythme d'arrivée des frames à ce moment précis.
         """
-        if len(_verify_history) < _VERIFY_WINDOW_MIN_SAMPLES:
+        now = _time_module.time()
+        # Purge les entrées trop anciennes (hors fenêtre de temps)
+        while _verify_history and (now - _verify_history[0][0]) > _VERIFY_WINDOW_SECONDS:
+            _verify_history.popleft()
+        recent = [ok for _, ok in _verify_history]
+        if len(recent) < _VERIFY_WINDOW_MIN_SAMPLES:
             return False
-        fail_ratio = 1.0 - (sum(_verify_history) / len(_verify_history))
+        fail_ratio = 1.0 - (sum(recent) / len(recent))
         return fail_ratio >= _VERIFY_WINDOW_ABSENT_RATIO
 
     _initial_zone_cx: Optional[float] = None
@@ -4021,7 +4033,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
             # vérification réussie — voir _verify_window_says_absent()
             # plus haut pour l'explication complète.
             if is_candidate:
-                _verify_history.append(True)
+                _verify_history.append((_time_module.time(), True))
 
 
             if not is_candidate:
@@ -4087,7 +4099,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
                     # au lieu d'exiger que TOUTES les tentatives
                     # récentes échouent consécutivement — voir
                     # _verify_window_says_absent() pour l'explication.
-                    _verify_history.append(False)
+                    _verify_history.append((_time_module.time(), False))
                     _tol = (5 if _n_candidates == 1 else 3)  # gardé pour l'affichage
                     _window_says_absent = _verify_window_says_absent()
 
