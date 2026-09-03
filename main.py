@@ -3871,6 +3871,44 @@ async def ws_analyze_realtime(websocket: WebSocket):
 
 
             if not is_candidate:
+                # ← AJOUT : quand l'image est déjà signalée comme
+                # dégradée (compute_dynamic_threshold a dû abaisser le
+                # seuil à cause d'une luminosité/flou hors norme), un
+                # échec de vérification n'est PAS compté comme un vrai
+                # rejet. Pourquoi : sur ces frames, l'embedding ArcFace
+                # devient souvent quasi aléatoire (similarité proche de
+                # 0, ex: 0.02-0.04) — ce n'est pas "un peu bruité mais
+                # reconnaissable", c'est inexploitable. Aucun seuil
+                # raisonnable ne peut accepter un tel résultat sans
+                # aussi accepter n'importe quel visage — abaisser encore
+                # le seuil ne réglerait rien. La vraie correction est de
+                # ne pas consommer une tentative du compteur de
+                # tolérance sur ces frames clairement dégradées, pour
+                # que les 5 tentatives tolérées se concentrent sur des
+                # frames de qualité correcte, où un vrai désaccord
+                # d'identité a un sens. Corrige les faux "candidat
+                # absent" observés lors de pics de luminosité passagers
+                # (reflet, ajustement caméra), sans affaiblir la
+                # discrimination entre deux personnes différentes sur
+                # des frames de bonne qualité (Problème inverse : ne
+                # jamais élargir l'acceptation, seulement ignorer les
+                # tentatives non concluantes).
+                _quality_degraded = dynamic_threshold_ws < 0.38
+                if _quality_degraded and similarity > 0.0:
+                    print(f"[WS] 🌫️ Frame ignorée (qualité dégradée, "
+                          f"seuil abaissé à {dynamic_threshold_ws:.2f}, "
+                          f"sim={similarity:.3f}) — pas comptée contre "
+                          f"la tolérance")
+                    result["candidate_status"] = "uncertain"
+                    result["warning"] = "Qualité d'image temporairement dégradée..."
+                    result["bbox"]    = [x1,y1,x2,y2]
+                    await websocket.send_json(convert_to_serializable(result))
+                    if (audio_b64 and (not active_audio_task or
+                            active_audio_task.done())):
+                        active_audio_task = asyncio.create_task(
+                            _process_audio_async(audio_b64, websocket, loop))
+                    continue
+
                 _rej_count += 1
 
                 total_failure = (similarity == 0.0)

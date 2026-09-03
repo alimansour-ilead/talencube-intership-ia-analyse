@@ -373,6 +373,20 @@ class IdentityManager:
         self._use_arc         = False
         self._pending_updates = []
         self.last_fail_reason: Optional[str] = None
+        # ← AJOUT : ancre fixe — copie de la toute première référence
+        # mémorisée, jamais modifiée par la suite. Sert de point de
+        # repère pour empêcher la référence courante (self._ref, qui
+        # évolue à chaque update() avec un mélange progressif) de
+        # dériver trop loin de l'identité d'origine au fil d'une longue
+        # session. Sans ce garde-fou, des centaines de mises à jour sur
+        # un entretien de plusieurs dizaines de minutes pourraient
+        # progressivement éloigner la référence de la vraie personne,
+        # la rendant plus susceptible d'accepter par erreur quelqu'un
+        # d'autre qui lui ressemble un peu.
+        self._anchor_ref: Optional[np.ndarray] = None
+        # Similarité minimale exigée entre la référence courante et
+        # l'ancre d'origine pour qu'une mise à jour soit acceptée.
+        self._ANCHOR_MIN_SIM = 0.55
         # ← PATCH v6.4 : instance ArcFace "rapide" (det_size réduit),
         # utilisée uniquement pour les vérifications répétées à chaque
         # frame (verify()). L'instance haute précision (self._arcface,
@@ -705,6 +719,11 @@ class IdentityManager:
         mean    = np.mean(stacked, axis=0)
         norm    = np.linalg.norm(mean)
         self._ref            = mean/norm if norm > 0 else mean
+        # ← AJOUT : fige l'ancre ici, au moment précis où la référence
+        # initiale est établie — c'est la seule fois où on est certain
+        # à 100% qu'elle représente la bonne personne, avant toute
+        # dérive progressive par les futures mises à jour (update()).
+        self._anchor_ref     = self._ref.copy()
         self._memorized      = True
         self._memorizing     = False
         self.candidate_embedding = self._ref
@@ -870,7 +889,29 @@ class IdentityManager:
             new  = (1 - alpha) * self._ref + alpha * mean_pending
             norm = np.linalg.norm(new)
             if norm > 0:
-                self._ref                = new / norm
+                candidate_new_ref = new / norm
+                # ← AJOUT : garde-fou anti-dérive. Avant d'appliquer la
+                # nouvelle référence, vérifie qu'elle reste raisonnablement
+                # proche de l'ancre fixe (la toute première référence,
+                # jamais modifiée). Sans ce contrôle, des centaines de
+                # mises à jour sur une longue session pourraient
+                # progressivement éloigner la référence de la vraie
+                # personne — la rendant plus susceptible d'accepter par
+                # erreur quelqu'un d'autre qui lui ressemble un peu.
+                # _ANCHOR_MIN_SIM (0.55) est délibérément plus permissif
+                # que le seuil de vérification normal (~0.38), pour ne
+                # pas bloquer une adaptation légitime (lunettes, angle,
+                # lumière) — seule une dérive VRAIMENT importante est
+                # refusée ici.
+                if self._anchor_ref is not None:
+                    anchor_sim = float(np.dot(candidate_new_ref, self._anchor_ref))
+                    if anchor_sim < self._ANCHOR_MIN_SIM:
+                        print(f"[Identity] ⚓ Mise à jour REJETÉE — "
+                              f"dérive excessive vs ancre d'origine "
+                              f"(sim_ancre={anchor_sim:.2f} < "
+                              f"{self._ANCHOR_MIN_SIM})")
+                        return
+                self._ref                = candidate_new_ref
                 self.candidate_embedding = self._ref
                 print(f"[Identity] ✅ Référence mise à jour "
                       f"alpha={alpha} sim={sim:.3f} "
@@ -881,6 +922,7 @@ class IdentityManager:
     def reset(self):
         self._embeddings      = []
         self._ref             = None
+        self._anchor_ref      = None
         self._memorized       = False
         self._memorizing      = False
         self.candidate_embedding = None
@@ -910,6 +952,12 @@ class IdentityManager:
             return False
         try:
             self._ref = np.asarray(ref, dtype=np.float32)
+            # ← AJOUT : réutilise la référence restaurée comme ancre —
+            # sans ça, le garde-fou anti-dérive (voir update()) serait
+            # silencieusement désactivé après chaque reconnexion, alors
+            # que c'est justement lors de longues sessions avec
+            # plusieurs reconnexions qu'il est le plus utile.
+            self._anchor_ref = self._ref.copy()
             self._memorized  = True
             self._memorizing = False
             self.candidate_embedding = self._ref
