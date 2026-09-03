@@ -3033,6 +3033,18 @@ async def ws_analyze_realtime(websocket: WebSocket):
     _frames_analyzed   = 0
     _metrics_history_ws: list = []
 
+    # ← AJOUT : indicateur "présence récemment confirmée" — permet,
+    # lors d'une frame ignorée pour qualité dégradée, de continuer à
+    # afficher le dernier état confirmé (présent, avec la dernière
+    # émotion connue) au lieu de basculer sur "incertain" sans aucune
+    # preuve d'un vrai changement. Corrige le fait que l'affichage
+    # restait bloqué sur "Vérification..." pendant toute la durée
+    # d'une série de frames dégradées (parfois 10+ secondes), alors
+    # qu'aucune de ces frames n'apporte la moindre indication que la
+    # personne ait bougé ou disparu — seulement que l'image de CETTE
+    # frame précise est inexploitable.
+    _recently_present = False
+
     locked_cx: Optional[float] = None
     locked_cy: Optional[float] = None
     _needs_lock  = False
@@ -4072,8 +4084,20 @@ async def ws_analyze_realtime(websocket: WebSocket):
                           f"seuil abaissé à {dynamic_threshold_ws:.2f}, "
                           f"sim={similarity:.3f}) — pas comptée contre "
                           f"la tolérance")
-                    result["candidate_status"] = "uncertain"
-                    result["warning"] = "Qualité d'image temporairement dégradée..."
+                    if _recently_present:
+                        # ← AJOUT : garde l'affichage "présent" stable
+                        # (dernière émotion/métriques connues) — aucune
+                        # preuve que la personne ait changé, juste
+                        # cette frame précise qui est inexploitable.
+                        result["candidate_status"] = "present"
+                        result["emotion"]           = _last_emotion
+                        result["confidence"]         = _last_confidence
+                        if _last_metrics:
+                            result["candidate_metrics"] = _last_metrics
+                        result["warning"] = "Qualité d'image temporairement dégradée..."
+                    else:
+                        result["candidate_status"] = "uncertain"
+                        result["warning"] = "Qualité d'image temporairement dégradée..."
                     result["bbox"]    = [x1,y1,x2,y2]
                     await websocket.send_json(convert_to_serializable(result))
                     if (audio_b64 and (not active_audio_task or
