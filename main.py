@@ -3,7 +3,7 @@ from fastapi import (FastAPI, File, UploadFile, BackgroundTasks,
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, Optional, Tuple
 import cv2
 import numpy as np
 import torch
@@ -1236,7 +1236,7 @@ def _arcface_embed_preview(face_img):
     return None
 
 
-def _extract_candidates_preview_sync(source: Union[bytes, str], filename: str):
+def _extract_candidates_preview_sync(file_bytes: bytes, filename: str):
     """
     ← PATCH ANTI-BLOCAGE (Windows WinError 64) : tout le traitement lourd
     et bloquant (écriture disque, FFmpeg, décodage vidéo frame par frame,
@@ -1271,11 +1271,8 @@ def _extract_candidates_preview_sync(source: Union[bytes, str], filename: str):
                                   f"preview_{_unique}_{filename}")
         fixed_path = os.path.join(tempfile.gettempdir(),
                                   f"fixed_preview_{_unique}_{filename}")
-        if isinstance(source, (str, os.PathLike)):
-            tmp_path = os.fspath(source)
-        else:
-            with open(tmp_path, "wb") as buf:
-                buf.write(source)
+        with open(tmp_path, "wb") as buf:
+            buf.write(file_bytes)
 
         print(f"[Preview] Réparation: {filename}")
         # ← OPTIMISATION MAJEURE : -t 35 limite le réencodage FFmpeg aux
@@ -1585,37 +1582,6 @@ def _extract_candidates_preview_sync(source: Union[bytes, str], filename: str):
         return ({'success': False, 'error': str(e)}, 500)
 
 
-async def _persist_upload_to_temp(file: UploadFile, prefix: str = "upload", max_bytes: int = 600 * 1024 * 1024) -> tuple[str, int]:
-    """Écrit l'UploadFile directement sur disque par blocs.
-
-    Ne fait jamais await file.read() sans taille : cela évite de dupliquer
-    une grosse vidéo dans le heap Python avant le traitement asynchrone.
-    """
-    safe_name = os.path.basename(file.filename or "video.mp4")
-    uid = __import__("uuid").uuid4().hex
-    path = os.path.join(tempfile.gettempdir(), f"{prefix}_{uid}_{safe_name}")
-    total = 0
-    chunk_size = 1024 * 1024
-    try:
-        with open(path, "wb") as out:
-            while True:
-                chunk = await file.read(chunk_size)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > max_bytes:
-                    raise ValueError(f"Fichier trop volumineux (max {max_bytes // (1024*1024)} MB)")
-                out.write(chunk)
-        if total <= 0:
-            raise ValueError("Fichier vide")
-        return path, total
-    except Exception:
-        if os.path.exists(path):
-            try: os.remove(path)
-            except Exception: pass
-        raise
-
-
 @app.post("/extract_candidates_preview")
 async def extract_candidates_preview(file: UploadFile = File(...)):
     # ← PATCH ANTI-BLOCAGE + ASYNC : même principe que /analyze_video —
@@ -1624,8 +1590,7 @@ async def extract_candidates_preview(file: UploadFile = File(...)):
     # 502 (timeout de proxy intermédiaire) si l'extraction prend
     # exceptionnellement plus de temps que prévu (connexion lente,
     # fichier volumineux à recevoir).
-    source_path, source_size = await _persist_upload_to_temp(
-        file, prefix="preview_upload", max_bytes=600 * 1024 * 1024)
+    file_bytes = await file.read()
     loop = asyncio.get_running_loop()
 
     import uuid as _uuid
@@ -1635,19 +1600,15 @@ async def extract_candidates_preview(file: UploadFile = File(...)):
     def _run_and_store():
         try:
             payload, status_code = _extract_candidates_preview_sync(
-                source_path, file.filename)
+                file_bytes, file.filename)
         except Exception as e:
             payload, status_code = ({'success': False, 'error': str(e)}, 500)
-            try:
-                if os.path.exists(source_path): os.remove(source_path)
-            except Exception:
-                pass
         complete_job(job_id, payload, status_code)
 
     loop.run_in_executor(video_processing_executor, _run_and_store)
 
-    return JSONResponse({"job_id": job_id, "status": "PROCESSING",
-                         "size_bytes": source_size}, status_code=202)
+    return JSONResponse({"job_id": job_id, "status": "PROCESSING"},
+                         status_code=202)
 
 
 @app.post("/analyze_video_from_url")
@@ -1688,7 +1649,7 @@ async def analyze_video_from_url(request: VideoURLRequest):
 
 
 
-def _analyze_video_sync(source: Union[bytes, str], filename: str,
+def _analyze_video_sync(file_bytes: bytes, filename: str,
                         target_x: Optional[float] = None,
                         target_y: Optional[float] = None,
                         embedding_key: Optional[str] = None):
@@ -1702,11 +1663,8 @@ def _analyze_video_sync(source: Union[bytes, str], filename: str,
         # temporaire entre deux analyses concurrentes du même fichier.
         _unique    = _uuid_module.uuid4().hex[:8]
         tmp_path   = os.path.join(tempfile.gettempdir(), f"{_unique}_{filename}")
-        if isinstance(source, (str, os.PathLike)):
-            tmp_path = os.fspath(source)
-        else:
-            with open(tmp_path, "wb") as buf:
-                buf.write(source)
+        with open(tmp_path, "wb") as buf:
+            buf.write(file_bytes)
 
         print(f"[analyze_video] Démarrage: {filename}")
         if embedding_key:
@@ -2861,8 +2819,7 @@ async def analyze_video(
         target_y: Optional[float]  = Form(None),
         embedding_key: Optional[str] = Form(None),
 ):
-    source_path, source_size = await _persist_upload_to_temp(
-        file, prefix="analysis_upload", max_bytes=600 * 1024 * 1024)
+    file_bytes = await file.read()
     loop = asyncio.get_running_loop()
 
     import uuid as _uuid
@@ -2872,13 +2829,9 @@ async def analyze_video(
     def _run_and_store():
         try:
             payload, status_code = _analyze_video_sync(
-                source_path, file.filename, target_x, target_y, embedding_key)
+                file_bytes, file.filename, target_x, target_y, embedding_key)
         except Exception as e:
             payload, status_code = ({'success': False, 'error': str(e)}, 500)
-            try:
-                if os.path.exists(source_path): os.remove(source_path)
-            except Exception:
-                pass
         complete_job(job_id, payload, status_code)
 
     # ← Soumis au pool existant, comme avant — seule la RÉPONSE HTTP
@@ -2886,8 +2839,8 @@ async def analyze_video(
     # elle-même s'exécute.
     loop.run_in_executor(video_processing_executor, _run_and_store)
 
-    return JSONResponse({"job_id": job_id, "status": "PROCESSING",
-                         "size_bytes": source_size}, status_code=202)
+    return JSONResponse({"job_id": job_id, "status": "PROCESSING"},
+                         status_code=202)
 
 
 @app.get("/analyze_video_result/{job_id}")
@@ -3065,7 +3018,6 @@ async def ws_analyze_realtime(websocket: WebSocket):
     _arcface_every     = 1
     _last_arcface_ok   = True
     _last_similarity   = 1.0
-    _last_arcface_frame = -999999
     _skip_arcface      = False
     _n_candidates      = 1
 
@@ -3400,7 +3352,6 @@ async def ws_analyze_realtime(websocket: WebSocket):
                 _frame_counter      = 0
                 _last_arcface_ok    = True
                 _last_similarity    = 1.0
-                _last_arcface_frame = -999999
                 _n_candidates       = 1
                 # ← AJOUT : évite de réutiliser un résultat MediaPipe
                 # de l'ancienne session/candidat après un reset.
@@ -4078,41 +4029,26 @@ async def ws_analyze_realtime(websocket: WebSocket):
                       f"{CFG.JUMP_DISTANCE_RATIO*W:.0f}px)")
 
             use_strict = jump_suspect or _force_strict_check
-            # ArcFace reste la référence d'identité, mais n'est plus
-            # recalculé inutilement à chaque frame pour un candidat unique.
-            # - multi-candidats / saut spatial suspect : chaque frame
-            # - candidat unique stable : au plus 1 vérification / 3 frames
-            # - entre deux vérifications : on conserve le dernier verdict
-            #   d'identité et le tracker/YOLO continue de fournir la bbox.
-            arcface_interval = 1 if (_n_candidates > 1 or use_strict) else 3
-            should_verify_identity = (
-                not tm.identity.memorized or
-                (_frame_counter - _last_arcface_frame) >= arcface_interval)
-
-            if should_verify_identity:
-                if tm.identity.use_arcface:
-                    is_candidate, similarity = await _run_sync(
-                        loop, executor, tm.identity.verify,
-                        face_img=face_img_padded,
-                        strict_global=use_strict,
-                        threshold=(None if use_strict
-                                   else dynamic_threshold_ws))
-                else:
-                    emb = await _run_sync(
-                        loop, executor, _extract_embedding_from_face, face_img)
-                    is_candidate, similarity = await _run_sync(
-                        loop, executor, tm.identity.verify,
-                        face_img=face_img_padded,
-                        embedding=emb,
-                        strict_global=use_strict,
-                        threshold=(None if use_strict
-                                   else dynamic_threshold_ws))
-                _last_arcface_frame = _frame_counter
-                _last_arcface_ok = bool(is_candidate)
-                _last_similarity = float(similarity)
+            # ← RUN_IN_EXECUTOR (chemin principal) : vérification
+            # ArcFace, appelée à CHAQUE frame — c'est l'appel le plus
+            # fréquent de toute la fonction.
+            if tm.identity.use_arcface:
+                is_candidate, similarity = await _run_sync(
+                    loop, executor, tm.identity.verify,
+                    face_img=face_img_padded,
+                    strict_global=use_strict,
+                    threshold=(None if use_strict
+                               else dynamic_threshold_ws))
             else:
-                is_candidate = _last_arcface_ok
-                similarity = _last_similarity
+                emb = await _run_sync(
+                    loop, executor, _extract_embedding_from_face, face_img)
+                is_candidate, similarity = await _run_sync(
+                    loop, executor, tm.identity.verify,
+                    face_img=face_img_padded,
+                    embedding=emb,
+                    strict_global=use_strict,
+                    threshold=(None if use_strict
+                               else dynamic_threshold_ws))
             if use_strict:
                 print(f"[WS] 🔒 Vérif. stricte sim={similarity:.3f} "
                       f"seuil={CFG.TOLERANCE_REID_GLOBAL} "
@@ -4132,6 +4068,26 @@ async def ws_analyze_realtime(websocket: WebSocket):
                 # de garder l'affichage stable si une frame dégradée
                 # survient juste après (voir plus bas).
                 _recently_present = True
+
+                # ← AJOUT : log de diagnostic explicite et facilement
+                # recherchable (grep "DIAGNOSTIC-IDENTITE"), sans besoin
+                # de connaître l'horodatage exact. Compare la similarité
+                # utilisée pour cette acceptation (contre la référence
+                # COURANTE, potentiellement dérivée) avec la similarité
+                # contre l'ANCRE d'origine (jamais modifiée, calculée
+                # dans tracking_manager.verify() et exposée ici) —
+                # permet de distinguer, la prochaine fois qu'un
+                # verrouillage sur la mauvaise personne est suspecté :
+                # soit la référence a dérivé (sim ancre basse, sim
+                # courante haute), soit c'est une vraie confusion du
+                # modèle entre deux visages proches (les deux hautes).
+                _sim_anchor = getattr(tm.identity, "last_sim_vs_anchor", None)
+                if _sim_anchor is not None:
+                    _ecart = abs(similarity - _sim_anchor)
+                    print(f"[WS] 🔎 DIAGNOSTIC-IDENTITE frame={_frame_counter} "
+                          f"sim_courante={similarity:.3f} "
+                          f"sim_ancre_origine={_sim_anchor:.3f} "
+                          f"{'⚠️ ÉCART SUSPECT' if _ecart > 0.25 else 'cohérent'}")
 
 
             if not is_candidate:

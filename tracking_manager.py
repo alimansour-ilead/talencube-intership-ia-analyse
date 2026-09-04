@@ -384,6 +384,10 @@ class IdentityManager:
         # la rendant plus susceptible d'accepter par erreur quelqu'un
         # d'autre qui lui ressemble un peu.
         self._anchor_ref: Optional[np.ndarray] = None
+        # ← AJOUT : dernière similarité calculée contre l'ancre
+        # d'origine — pour diagnostic, lu depuis main.py après chaque
+        # verify() réussi.
+        self.last_sim_vs_anchor: Optional[float] = None
         # Similarité minimale exigée entre la référence courante et
         # l'ancre d'origine pour qu'une mise à jour soit acceptée.
         self._ANCHOR_MIN_SIM = 0.55
@@ -780,6 +784,18 @@ class IdentityManager:
             sim = float(np.dot(self._ref, emb))
             ok  = sim >= effective_seuil
             self.last_fail_reason = None if ok else "similarity_below_threshold"
+
+            # ← AJOUT : calcule aussi la similarité avec l'ANCRE
+            # d'origine (jamais modifiée), stockée sur l'instance pour
+            # être lue depuis main.py sans recalcul — permet de
+            # diagnostiquer si une acceptation vient d'une dérive de
+            # la référence courante (sim ancre basse, sim courante
+            # haute) ou d'une vraie confusion du modèle entre deux
+            # visages proches (les deux hautes).
+            self.last_sim_vs_anchor = (
+                float(np.dot(self._anchor_ref, emb))
+                if self._anchor_ref is not None else None)
+
             print(f"[Identity] verify sim={sim:.3f} "
                   f"seuil={effective_seuil:.2f}"
                   f"{' [secours+renforcé]' if self._last_embed_low_conf else ''} "
