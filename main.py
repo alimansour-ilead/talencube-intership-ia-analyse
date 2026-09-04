@@ -3110,6 +3110,15 @@ async def ws_analyze_realtime(websocket: WebSocket):
     _active_tracking_key: Optional[str] = None
 
     async def _send_absent(reason: str, bbox, sim: float = 0.0):
+        # ← AJOUT : centralise ici la remise à zéro de l'indicateur
+        # "présence récemment confirmée" — _send_absent est le SEUL
+        # point qui envoie réellement candidate_status="absent" au
+        # client, peu importe lequel de ses multiples appelants l'a
+        # déclenché (bbox invalide, hors zone, absence confirmée par
+        # la fenêtre glissante, etc.) — centraliser ici évite d'oublier
+        # un site d'appel.
+        nonlocal _recently_present
+        _recently_present = False
         # ← PATCH v7.0 (#19) : expose la cause diagnostiquée plutôt
         # qu'un simple "absent" opaque, pour permettre de distinguer
         # un vrai départ du candidat d'un problème de qualité vidéo.
@@ -3232,7 +3241,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
         locked_cx = cx; locked_cy = cy
         _needs_lock = False
         _cache_key  = None; _cache_sim = None
-        _rej_count  = 0; _memo_fails = 0; _verify_history.clear()
+        _rej_count  = 0; _memo_fails = 0; _verify_history.clear(); _recently_present = False
 
         print(f"[WS] ✅ Lock id={bt.track_id} ({cx:.0f},{cy:.0f}) "
               f"sim={best_sim:.3f} first={first_lock} dist={best_dist:.0f}px")
@@ -3348,7 +3357,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
                 _needs_lock         = False
                 _cache_key          = None
                 _cache_sim          = None
-                _rej_count          = 0; _verify_history.clear()
+                _rej_count          = 0; _verify_history.clear(); _recently_present = False
                 _memo_fails         = 0
                 _initial_zone_cx    = None
                 _initial_zone_cy    = None
@@ -3446,7 +3455,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
             if tm.state == State.ABANDONED:
                 tm.reset_tracking()
                 _cache_key = None; _cache_sim = None
-                _rej_count = 0; _memo_fails = 0; _verify_history.clear()
+                _rej_count = 0; _memo_fails = 0; _verify_history.clear(); _recently_present = False
 
             # ← AJOUT : restauration rapide depuis l'état de tracking
             # partagé (Redis), AVANT le flux classique ci-dessous.
@@ -3892,7 +3901,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
                             locked_cx = cx_k; locked_cy = cy_k
                             _initial_zone_cx = cx_k; _initial_zone_cy = cy_k
                             tm.zone.define(cx_k, cy_k, W, H)
-                            _cache_key = None; _cache_sim = None; _rej_count = 0; _verify_history.clear()
+                            _cache_key = None; _cache_sim = None; _rej_count = 0; _verify_history.clear(); _recently_present = False
                             found_dark = True
                             print(f"[WS] ✅ Sorti zone {zone_label} "
                                   f"({cx_k:.0f},{cy_k:.0f}) "
@@ -4046,6 +4055,10 @@ async def ws_analyze_realtime(websocket: WebSocket):
             # plus haut pour l'explication complète.
             if is_candidate:
                 _verify_history.append((_time_module.time(), True))
+                # ← AJOUT : marque la présence comme confirmée — permet
+                # de garder l'affichage stable si une frame dégradée
+                # survient juste après (voir plus bas).
+                _recently_present = True
 
 
             if not is_candidate:
@@ -4132,9 +4145,23 @@ async def ws_analyze_realtime(websocket: WebSocket):
                           f"({_rej_count}/{_tol}) sim={similarity:.3f} — "
                           f"attente confirmation "
                           f"{'[ECHEC TOTAL]' if total_failure else ''}")
-                    result["candidate_status"] = "uncertain"
-                    result["warning"] = (
-                        f"Vérification... ({_rej_count}/{_tol})")
+                    if _recently_present:
+                        # ← AJOUT : même logique que pour la qualité
+                        # dégradée — tant que l'absence n'est pas
+                        # confirmée par la fenêtre, garder l'affichage
+                        # stable plutôt que de basculer sur "incertain"
+                        # à chaque tentative isolée.
+                        result["candidate_status"] = "present"
+                        result["emotion"]           = _last_emotion
+                        result["confidence"]         = _last_confidence
+                        if _last_metrics:
+                            result["candidate_metrics"] = _last_metrics
+                        result["warning"] = (
+                            f"Vérification... ({_rej_count}/{_tol})")
+                    else:
+                        result["candidate_status"] = "uncertain"
+                        result["warning"] = (
+                            f"Vérification... ({_rej_count}/{_tol})")
                     result["bbox"]    = [x1,y1,x2,y2]
                     await websocket.send_json(convert_to_serializable(result))
                     if (audio_b64 and (not active_audio_task or
@@ -4196,7 +4223,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
                                       float(tight_r[2]),float(tight_r[3])]
                             tm.force_track(bt_r.track_id, bbox_r)
                             locked_cx = cx_r; locked_cy = cy_r
-                            _rej_count = 0; _verify_history.clear()
+                            _rej_count = 0; _verify_history.clear(); _recently_present = False
                             tm.zone.define(cx_r, cy_r, W, H)
                             _initial_zone_cx = cx_r; _initial_zone_cy = cy_r
                             result["tracking"]["bbox"]          = bbox_r
@@ -4281,7 +4308,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
                         _process_audio_async(audio_b64, websocket, loop))
                 continue
 
-            _rej_count = 0; _verify_history.clear()
+            _rej_count = 0; _verify_history.clear(); _recently_present = False
             # ← RUN_IN_EXECUTOR (chemin principal) : mise à jour de la
             # référence ArcFace, appelée à chaque frame validée.
             await _run_sync(loop, executor, tm.identity.update,
