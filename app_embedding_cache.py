@@ -58,15 +58,20 @@ def store_embedding(key: str, embedding: np.ndarray, face_img=None) -> None:
 
 
 def get_embedding(key: str) -> Tuple[Optional[np.ndarray], Optional[object]]:
-    """Récupérer et supprimer un embedding (usage unique)."""
+    """Récupérer et supprimer ATOMIQUEMENT un embedding (usage unique)."""
     if _redis_client is None:
         return None, None
     try:
         redis_key = _KEY_PREFIX + key
-        data = _redis_client.get(redis_key)
+        # ← FIX (proposition validée) : GETDEL au lieu de GET puis DELETE
+        # séparément — élimine le risque théorique où deux requêtes
+        # (sur deux répliques différentes) liraient le même embedding
+        # avant qu'aucune des deux n'ait eu le temps de le supprimer.
+        # GETDEL fait les deux opérations en une seule commande atomique
+        # côté Redis.
+        data = _redis_client.getdel(redis_key)
         if data is None:
             return None, None
-        _redis_client.delete(redis_key)
         embedding, face_img = pickle.loads(data)
         return embedding, face_img
     except Exception as e:
@@ -199,10 +204,27 @@ def clear_tracking_state(session_key: str) -> None:
 _JOB_TTL_SECONDS = 30 * 60  # 30 min — large marge sur les analyses les plus longues
 _JOB_KEY_PREFIX  = "async_job:"
 
+# ← AJOUT : repli local en mémoire quand Redis est indisponible (ex:
+# développement local sans Redis installé). Un seul processus local
+# n'a pas le problème de répliques multiples qui justifiait Redis —
+# un simple dict suffit et évite d'imposer l'installation de Redis
+# juste pour tester en local. En production (Railway, plusieurs
+# répliques), Redis reste utilisé normalement dès qu'il est
+# disponible ; ce repli ne s'active QUE si _redis_client est None.
+import threading as _threading_module
+import time as _time_module_jobs
+_local_jobs: dict = {}
+_local_jobs_lock = _threading_module.Lock()
+
 
 def create_job(job_id: str) -> None:
     """Enregistre un nouveau job comme 'en cours de traitement'."""
     if _redis_client is None:
+        with _local_jobs_lock:
+            _local_jobs[job_id] = (
+                {"status": "PROCESSING"},
+                _time_module_jobs.time() + _JOB_TTL_SECONDS
+            )
         return
     try:
         _redis_client.setex(_JOB_KEY_PREFIX + job_id, _JOB_TTL_SECONDS,
@@ -214,6 +236,12 @@ def create_job(job_id: str) -> None:
 def complete_job(job_id: str, payload: dict, status_code: int) -> None:
     """Enregistre le résultat final d'un job (succès ou erreur)."""
     if _redis_client is None:
+        with _local_jobs_lock:
+            _local_jobs[job_id] = (
+                {"status": "DONE", "payload": payload,
+                 "status_code": status_code},
+                _time_module_jobs.time() + _JOB_TTL_SECONDS
+            )
         return
     try:
         _redis_client.setex(_JOB_KEY_PREFIX + job_id, _JOB_TTL_SECONDS,
@@ -231,12 +259,26 @@ def get_job(job_id: str):
     Retourne l'état d'un job :
     - None si le job n'existe pas (jamais créé, ou expiré après 30 min)
     - "PROCESSING" si le job est encore en cours
-    - (payload, status_code) si le job est terminé — l'entrée est
-      supprimée de Redis après cette lecture (usage unique, comme le
-      comportement d'origine du dictionnaire en mémoire).
+    - (payload, status_code) si le job est terminé.
+
+    ← FIX (proposition validée) : le résultat n'est PLUS supprimé
+    immédiatement après lecture — laissé en place jusqu'à expiration
+    du TTL (30 min). Avant, une seconde lecture rapprochée (retry
+    réseau, double appel) pouvait tomber sur un 404 alors que le
+    résultat venait juste d'être généré et lu une première fois.
     """
     if _redis_client is None:
-        return None
+        with _local_jobs_lock:
+            entry = _local_jobs.get(job_id)
+            if entry is None:
+                return None
+            data, expires_at = entry
+            if _time_module_jobs.time() > expires_at:
+                _local_jobs.pop(job_id, None)
+                return None
+            if data["status"] == "PROCESSING":
+                return "PROCESSING"
+            return (data["payload"], data["status_code"])
     try:
         key  = _JOB_KEY_PREFIX + job_id
         data = _redis_client.get(key)
@@ -245,7 +287,6 @@ def get_job(job_id: str):
         entry = pickle.loads(data)
         if entry["status"] == "PROCESSING":
             return "PROCESSING"
-        _redis_client.delete(key)
         return (entry["payload"], entry["status_code"])
     except Exception as e:
         print(f"[AsyncJob] Erreur get: {e}")
