@@ -3044,6 +3044,10 @@ async def ws_analyze_realtime(websocket: WebSocket):
     # personne ait bougé ou disparu — seulement que l'image de CETTE
     # frame précise est inexploitable.
     _recently_present = False
+    # ← AJOUT : compteur de succès consécutifs — exige 2 avant de
+    # confirmer pleinement la présence (voir explication au point
+    # d'usage plus bas).
+    _consecutive_successes = 0
 
     locked_cx: Optional[float] = None
     locked_cy: Optional[float] = None
@@ -3126,8 +3130,9 @@ async def ws_analyze_realtime(websocket: WebSocket):
         # déclenché (bbox invalide, hors zone, absence confirmée par
         # la fenêtre glissante, etc.) — centraliser ici évite d'oublier
         # un site d'appel.
-        nonlocal _recently_present
+        nonlocal _recently_present, _consecutive_successes
         _recently_present = False
+        _consecutive_successes = 0
         # ← PATCH v7.0 (#19) : expose la cause diagnostiquée plutôt
         # qu'un simple "absent" opaque, pour permettre de distinguer
         # un vrai départ du candidat d'un problème de qualité vidéo.
@@ -3250,7 +3255,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
         locked_cx = cx; locked_cy = cy
         _needs_lock = False
         _cache_key  = None; _cache_sim = None
-        _rej_count  = 0; _memo_fails = 0; _verify_history.clear(); _recently_present = False
+        _rej_count  = 0; _memo_fails = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0
 
         print(f"[WS] ✅ Lock id={bt.track_id} ({cx:.0f},{cy:.0f}) "
               f"sim={best_sim:.3f} first={first_lock} dist={best_dist:.0f}px")
@@ -3366,7 +3371,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
                 _needs_lock         = False
                 _cache_key          = None
                 _cache_sim          = None
-                _rej_count          = 0; _verify_history.clear(); _recently_present = False
+                _rej_count          = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0
                 _memo_fails         = 0
                 _initial_zone_cx    = None
                 _initial_zone_cy    = None
@@ -3464,7 +3469,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
             if tm.state == State.ABANDONED:
                 tm.reset_tracking()
                 _cache_key = None; _cache_sim = None
-                _rej_count = 0; _memo_fails = 0; _verify_history.clear(); _recently_present = False
+                _rej_count = 0; _memo_fails = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0
 
             # ← AJOUT : restauration rapide depuis l'état de tracking
             # partagé (Redis), AVANT le flux classique ci-dessous.
@@ -3910,7 +3915,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
                             locked_cx = cx_k; locked_cy = cy_k
                             _initial_zone_cx = cx_k; _initial_zone_cy = cy_k
                             tm.zone.define(cx_k, cy_k, W, H)
-                            _cache_key = None; _cache_sim = None; _rej_count = 0; _verify_history.clear(); _recently_present = False
+                            _cache_key = None; _cache_sim = None; _rej_count = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0
                             found_dark = True
                             print(f"[WS] ✅ Sorti zone {zone_label} "
                                   f"({cx_k:.0f},{cy_k:.0f}) "
@@ -4089,8 +4094,41 @@ async def ws_analyze_realtime(websocket: WebSocket):
                           f"sim_ancre_origine={_sim_anchor:.3f} "
                           f"{'⚠️ ÉCART SUSPECT' if _ecart > 0.25 else 'cohérent'}")
 
+                # ← AJOUT : exige 2 succès CONSÉCUTIFS avant de
+                # confirmer pleinement la présence — symétrique à la
+                # logique déjà appliquée côté absence (qui exige 70%
+                # d'échecs sur plusieurs échantillons, jamais un seul).
+                # Avant ce correctif, UN SEUL succès suffisait à
+                # afficher "EN ANALYSE" avec métriques calculées —
+                # confirmé en test vidéo : un verrouillage sur la
+                # MAUVAISE personne pouvait donc se confirmer
+                # instantanément sur un unique match chanceux (bruit,
+                # confusion ponctuelle du modèle), sans la moindre
+                # vérification supplémentaire. Exiger 2 succès de
+                # suite avant confirmation réduit ce risque, tout en
+                # gardant un coût minime en temps (une frame de plus,
+                # ~0.5-1s) pour la reconnaissance légitime.
+                _consecutive_successes += 1
+                if _consecutive_successes < 2:
+                    print(f"[WS] 🔸 Succès {_consecutive_successes}/2 — "
+                          f"confirmation en attente avant présence")
+                    result["candidate_status"] = "present" if _recently_present else "uncertain"
+                    if _recently_present:
+                        result["emotion"]    = _last_emotion
+                        result["confidence"] = _last_confidence
+                        if _last_metrics:
+                            result["candidate_metrics"] = _last_metrics
+                    result["bbox"] = [x1,y1,x2,y2]
+                    await websocket.send_json(convert_to_serializable(result))
+                    if (audio_b64 and (not active_audio_task or
+                            active_audio_task.done())):
+                        active_audio_task = asyncio.create_task(
+                            _process_audio_async(audio_b64, websocket, loop))
+                    continue
+
 
             if not is_candidate:
+                _consecutive_successes = 0
                 # ← AJOUT : quand l'image est déjà signalée comme
                 # dégradée (compute_dynamic_threshold a dû abaisser le
                 # seuil à cause d'une luminosité/flou hors norme), un
@@ -4252,7 +4290,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
                                       float(tight_r[2]),float(tight_r[3])]
                             tm.force_track(bt_r.track_id, bbox_r)
                             locked_cx = cx_r; locked_cy = cy_r
-                            _rej_count = 0; _verify_history.clear(); _recently_present = False
+                            _rej_count = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0
                             tm.zone.define(cx_r, cy_r, W, H)
                             _initial_zone_cx = cx_r; _initial_zone_cy = cy_r
                             result["tracking"]["bbox"]          = bbox_r
@@ -4337,7 +4375,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
                         _process_audio_async(audio_b64, websocket, loop))
                 continue
 
-            _rej_count = 0; _verify_history.clear(); _recently_present = False
+            _rej_count = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0
             # ← RUN_IN_EXECUTOR (chemin principal) : mise à jour de la
             # référence ArcFace, appelée à chaque frame validée.
             await _run_sync(loop, executor, tm.identity.update,
