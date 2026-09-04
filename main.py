@@ -3076,9 +3076,18 @@ async def ws_analyze_realtime(websocket: WebSocket):
     # importe la vitesse d'arrivée des frames à ce moment précis.
     import collections as _collections_module
     _verify_history = _collections_module.deque(maxlen=30)  # marge large, borné par le temps ci-dessous
-    _VERIFY_WINDOW_SECONDS = 2.5        # fenêtre de temps réel, pas un nombre de frames
-    _VERIFY_WINDOW_MIN_SAMPLES = 4      # pas de décision avant d'avoir assez de données
-    _VERIFY_WINDOW_ABSENT_RATIO = 0.7   # 70% d'échecs récents → absent confirmé
+    # ← AJUSTEMENT : fenêtre réduite (2.5s → 1.5s, 4 échantillons → 3)
+    # pour accélérer le temps de réponse de la vérification. Compromis
+    # assumé : une fenêtre plus courte réagit plus vite aux vrais
+    # changements (absence confirmée OU retour à présent plus
+    # rapidement), au prix d'une robustesse légèrement moindre face à
+    # un bruit isolé très ponctuel — acceptable, puisque le mécanisme
+    # de qualité dégradée (frames ignorées, pas comptées) continue de
+    # filtrer la cause la plus fréquente de faux signaux en amont,
+    # avant même que ces échantillons n'atteignent cette fenêtre.
+    _VERIFY_WINDOW_SECONDS = 1.5         # fenêtre de temps réel, pas un nombre de frames
+    _VERIFY_WINDOW_MIN_SAMPLES = 3       # pas de décision avant d'avoir assez de données
+    _VERIFY_WINDOW_ABSENT_RATIO = 0.7    # 70% d'échecs récents → absent confirmé
 
     def _verify_window_says_absent() -> bool:
         """
