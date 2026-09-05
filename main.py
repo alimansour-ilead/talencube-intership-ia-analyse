@@ -3090,7 +3090,18 @@ async def ws_analyze_realtime(websocket: WebSocket):
     # filtrer la cause la plus fréquente de faux signaux en amont,
     # avant même que ces échantillons n'atteignent cette fenêtre.
     _VERIFY_WINDOW_SECONDS = 1.5         # fenêtre de temps réel, pas un nombre de frames
-    _VERIFY_WINDOW_MIN_SAMPLES = 3       # pas de décision avant d'avoir assez de données
+    # ← FIX : minimum réduit de 3 à 2 échantillons. Bug confirmé en
+    # production (logs triés chronologiquement) : avec un rythme
+    # d'arrivée des frames de 0.5-0.7s, une fenêtre de 1.5s contenait
+    # TANTÔT 2, TANTÔT 3 échantillons selon d'infimes variations de
+    # timing — sous le seuil de 3, la décision "PAS assez de données"
+    # revenait, faisant BASCULER l'affichage entre "absent confirmé"
+    # et "en attente de confirmation" plusieurs fois de suite, alors
+    # que la situation réelle (échecs continus, aucune réussite entre
+    # les deux) n'avait absolument pas changé. Avec 2 comme minimum,
+    # la fenêtre de 1.5s contient presque toujours assez de données,
+    # éliminant cette oscillation.
+    _VERIFY_WINDOW_MIN_SAMPLES = 2       # pas de décision avant d'avoir assez de données
     _VERIFY_WINDOW_ABSENT_RATIO = 0.7    # 70% d'échecs récents → absent confirmé
 
     def _verify_window_says_absent() -> bool:
