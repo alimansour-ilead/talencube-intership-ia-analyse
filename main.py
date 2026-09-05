@@ -3048,6 +3048,10 @@ async def ws_analyze_realtime(websocket: WebSocket):
     # confirmer pleinement la présence (voir explication au point
     # d'usage plus bas).
     _consecutive_successes = 0
+    # ← AJOUT : nombre de confirmations requises avant de confirmer
+    # pleinement la présence — normalement 2, renforcé à 4 après une
+    # longue série d'échecs réels (voir explication au point d'usage).
+    _required_confirmations = 2
     # ← AJOUT : dernier track_id DeepSort ayant validé une
     # correspondance — permet de détecter un changement de piste
     # (signal indépendant du visage) pour la vérification croisée.
@@ -4151,7 +4155,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
                           f"sim_ancre_origine={_sim_anchor:.3f} "
                           f"{'⚠️ ÉCART SUSPECT' if _ecart > 0.25 else 'cohérent'}")
 
-                # ← AJOUT : exige 2 succès CONSÉCUTIFS avant de
+                # ← AJOUT : exige plusieurs succès CONSÉCUTIFS avant de
                 # confirmer pleinement la présence — symétrique à la
                 # logique déjà appliquée côté absence (qui exige 70%
                 # d'échecs sur plusieurs échantillons, jamais un seul).
@@ -4161,14 +4165,35 @@ async def ws_analyze_realtime(websocket: WebSocket):
                 # MAUVAISE personne pouvait donc se confirmer
                 # instantanément sur un unique match chanceux (bruit,
                 # confusion ponctuelle du modèle), sans la moindre
-                # vérification supplémentaire. Exiger 2 succès de
-                # suite avant confirmation réduit ce risque, tout en
-                # gardant un coût minime en temps (une frame de plus,
-                # ~0.5-1s) pour la reconnaissance légitime.
+                # vérification supplémentaire.
+                #
+                # ← RENFORCEMENT : le nombre de succès requis
+                # augmente selon la longueur de la coupure qui
+                # précède. Confirmé en test vidéo (avec preuve
+                # DIAGNOSTIC-IDENTITE à l'appui) : un changement de
+                # personne se manifeste souvent par un SAUT BRUTAL de
+                # similarité (quasi zéro puis soudainement élevée),
+                # après une longue série d'échecs réels — contrairement
+                # à une vraie reconnexion du même candidat, qui montre
+                # plutôt une amélioration progressive. Plus la coupure
+                # était longue (beaucoup d'échecs réels accumulés),
+                # plus le risque qu'il s'agisse d'une autre personne
+                # est élevé — on exige alors davantage de confirmations
+                # avant de faire à nouveau confiance.
+                if _consecutive_successes == 0:
+                    _required_confirmations = (
+                        4 if _rej_count >= 5 else 2)
+                    if _rej_count >= 5:
+                        print(f"[WS] 🛡️ Longue coupure détectée "
+                              f"({_rej_count} échecs) — renforce à "
+                              f"{_required_confirmations} confirmations "
+                              f"requises avant présence")
+                    _rej_count = 0
                 _consecutive_successes += 1
-                if _consecutive_successes < 2:
-                    print(f"[WS] 🔸 Succès {_consecutive_successes}/2 — "
-                          f"confirmation en attente avant présence")
+                if _consecutive_successes < _required_confirmations:
+                    print(f"[WS] 🔸 Succès {_consecutive_successes}/"
+                          f"{_required_confirmations} — confirmation "
+                          f"en attente avant présence")
                     result["candidate_status"] = "present" if _recently_present else "uncertain"
                     if _recently_present:
                         result["emotion"]    = _last_emotion
