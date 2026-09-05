@@ -4139,7 +4139,6 @@ async def ws_analyze_realtime(websocket: WebSocket):
 
 
             if not is_candidate:
-                _consecutive_successes = 0
                 # ← AJOUT : quand l'image est déjà signalée comme
                 # dégradée (compute_dynamic_threshold a dû abaisser le
                 # seuil à cause d'une luminosité/flou hors norme), un
@@ -4197,6 +4196,19 @@ async def ws_analyze_realtime(websocket: WebSocket):
                             _process_audio_async(audio_b64, websocket, loop))
                     continue
 
+                # ← FIX : remise à zéro déplacée ici — uniquement pour
+                # un VRAI échec (les frames à qualité dégradée ont déjà
+                # fait `continue` avant ce point, donc ne l'atteignent
+                # jamais). Avant, la remise à zéro se faisait dès
+                # `not is_candidate`, y compris sur les frames
+                # dégradées — confirmé en production : chaque petit pic
+                # de mauvaise qualité entre deux succès forçait à
+                # recommencer les 2 succès consécutifs requis depuis
+                # zéro, annulant l'intérêt du filtre qualité pour ce
+                # compteur précis (log : "Succès 1/2" répété sans
+                # jamais progresser, alors que les échecs intercalés
+                # étaient uniquement des frames dégradées ignorées).
+                _consecutive_successes = 0
                 _rej_count += 1
 
                 total_failure = (similarity == 0.0)
