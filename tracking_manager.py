@@ -91,6 +91,16 @@ class Config:
     # flou passager sur le bon candidat).
     TOTAL_FAILURE_TOLERANCE: int = 1
 
+    # ← AJOUT : seuil de similarité exigé quand DeepSort signale un
+    # changement de piste (track_id différent de la dernière
+    # correspondance validée) — signal indépendant du visage, basé
+    # sur la continuité de mouvement/position. Volontairement plus
+    # strict que le seuil normal (~0.25-0.38 selon qualité d'image),
+    # car c'est précisément dans ce cas (nouvelle personne détectée
+    # par le tracker) qu'une confusion entre deux visages différents
+    # est la plus dangereuse à accepter à tort.
+    STRICT_TRACK_CHANGE_THRESHOLD: float = 0.75
+
     # Distance de saut (en fraction de la largeur de frame) au-delà
     # de laquelle un nouveau bbox est considéré comme un changement
     # de plan / bascule de locuteur potentiel plutôt qu'un mouvement

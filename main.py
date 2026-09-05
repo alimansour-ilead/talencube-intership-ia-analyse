@@ -3048,6 +3048,10 @@ async def ws_analyze_realtime(websocket: WebSocket):
     # confirmer pleinement la présence (voir explication au point
     # d'usage plus bas).
     _consecutive_successes = 0
+    # ← AJOUT : dernier track_id DeepSort ayant validé une
+    # correspondance — permet de détecter un changement de piste
+    # (signal indépendant du visage) pour la vérification croisée.
+    _last_matched_track_id: Optional[int] = None
 
     locked_cx: Optional[float] = None
     locked_cy: Optional[float] = None
@@ -3141,9 +3145,10 @@ async def ws_analyze_realtime(websocket: WebSocket):
         # déclenché (bbox invalide, hors zone, absence confirmée par
         # la fenêtre glissante, etc.) — centraliser ici évite d'oublier
         # un site d'appel.
-        nonlocal _recently_present, _consecutive_successes
+        nonlocal _recently_present, _consecutive_successes, _last_matched_track_id
         _recently_present = False
         _consecutive_successes = 0
+        _last_matched_track_id = None
         # ← PATCH v7.0 (#19) : expose la cause diagnostiquée plutôt
         # qu'un simple "absent" opaque, pour permettre de distinguer
         # un vrai départ du candidat d'un problème de qualité vidéo.
@@ -3266,7 +3271,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
         locked_cx = cx; locked_cy = cy
         _needs_lock = False
         _cache_key  = None; _cache_sim = None
-        _rej_count  = 0; _memo_fails = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0
+        _rej_count  = 0; _memo_fails = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0; _last_matched_track_id = None
 
         print(f"[WS] ✅ Lock id={bt.track_id} ({cx:.0f},{cy:.0f}) "
               f"sim={best_sim:.3f} first={first_lock} dist={best_dist:.0f}px")
@@ -3382,7 +3387,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
                 _needs_lock         = False
                 _cache_key          = None
                 _cache_sim          = None
-                _rej_count          = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0
+                _rej_count          = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0; _last_matched_track_id = None
                 _memo_fails         = 0
                 _initial_zone_cx    = None
                 _initial_zone_cy    = None
@@ -3480,7 +3485,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
             if tm.state == State.ABANDONED:
                 tm.reset_tracking()
                 _cache_key = None; _cache_sim = None
-                _rej_count = 0; _memo_fails = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0
+                _rej_count = 0; _memo_fails = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0; _last_matched_track_id = None
 
             # ← AJOUT : restauration rapide depuis l'état de tracking
             # partagé (Redis), AVANT le flux classique ci-dessous.
@@ -3926,7 +3931,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
                             locked_cx = cx_k; locked_cy = cy_k
                             _initial_zone_cx = cx_k; _initial_zone_cy = cy_k
                             tm.zone.define(cx_k, cy_k, W, H)
-                            _cache_key = None; _cache_sim = None; _rej_count = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0
+                            _cache_key = None; _cache_sim = None; _rej_count = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0; _last_matched_track_id = None
                             found_dark = True
                             print(f"[WS] ✅ Sorti zone {zone_label} "
                                   f"({cx_k:.0f},{cy_k:.0f}) "
@@ -4071,6 +4076,47 @@ async def ws_analyze_realtime(websocket: WebSocket):
                       f"{'✅' if is_candidate else '❌'}")
             _last_arcface_ok = is_candidate
             _last_similarity = similarity
+
+            # ← AJOUT : vérification croisée avec le track_id DeepSort
+            # — un signal COMPLÈTEMENT INDÉPENDANT du visage, basé
+            # uniquement sur la continuité de mouvement/position.
+            # Pourquoi c'est nécessaire : confirmé en tests vidéo
+            # répétés (avec preuve DIAGNOSTIC-IDENTITE à l'appui) que
+            # deux personnes différentes peuvent produire une
+            # similarité ArcFace élevée l'une envers l'autre — une
+            # vraie limite du modèle pour certaines paires de visages,
+            # pas une dérive de référence corrigible autrement. Si
+            # DeepSort lui-même signale une NOUVELLE piste (perte de
+            # continuité spatiale — quelqu'un d'autre est
+            # probablement entré dans le cadre), on exige un seuil
+            # bien plus strict avant d'accepter, même si ArcFace seul
+            # aurait validé avec le seuil normal. Si c'est la MÊME
+            # piste suivie en continu, la continuité spatiale est déjà
+            # une preuve indépendante solide — le seuil normal reste
+            # inchangé.
+            if is_candidate:
+                _current_track_id = tm.track_id
+                if (_last_matched_track_id is not None and
+                        _current_track_id is not None and
+                        _current_track_id != _last_matched_track_id):
+                    if similarity < CFG.STRICT_TRACK_CHANGE_THRESHOLD:
+                        print(f"[WS] 🚨 Piste DeepSort changée "
+                              f"({_last_matched_track_id} → "
+                              f"{_current_track_id}) et similarité "
+                              f"insuffisante pour ce cas strict "
+                              f"(sim={similarity:.3f} < "
+                              f"{CFG.STRICT_TRACK_CHANGE_THRESHOLD}) "
+                              f"— rejeté malgré le seuil normal validé")
+                        is_candidate = False
+                    else:
+                        print(f"[WS] 🔄 Piste DeepSort changée mais "
+                              f"similarité suffisante pour ce cas "
+                              f"strict (sim={similarity:.3f} ≥ "
+                              f"{CFG.STRICT_TRACK_CHANGE_THRESHOLD}) "
+                              f"— accepté")
+                if is_candidate:
+                    _last_matched_track_id = _current_track_id
+
             print(f"[WS] ArcFace frame {_frame_counter} "
                   f"sim={similarity:.3f} seuil={dynamic_threshold_ws:.2f} "
                   f"{'✅' if is_candidate else '❌'}")
@@ -4313,7 +4359,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
                                       float(tight_r[2]),float(tight_r[3])]
                             tm.force_track(bt_r.track_id, bbox_r)
                             locked_cx = cx_r; locked_cy = cy_r
-                            _rej_count = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0
+                            _rej_count = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0; _last_matched_track_id = None
                             tm.zone.define(cx_r, cy_r, W, H)
                             _initial_zone_cx = cx_r; _initial_zone_cy = cy_r
                             result["tracking"]["bbox"]          = bbox_r
@@ -4398,7 +4444,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
                         _process_audio_async(audio_b64, websocket, loop))
                 continue
 
-            _rej_count = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0
+            _rej_count = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0; _last_matched_track_id = None
             # ← RUN_IN_EXECUTOR (chemin principal) : mise à jour de la
             # référence ArcFace, appelée à chaque frame validée.
             await _run_sync(loop, executor, tm.identity.update,
