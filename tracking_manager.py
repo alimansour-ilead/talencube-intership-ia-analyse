@@ -437,6 +437,20 @@ class IdentityManager:
                                  face_img=None) -> None:
         emb                      = self._norm(embedding)
         self._ref                = emb
+        # ← FIX CRITIQUE : cette fonction ne fixait jamais l'ancre
+        # anti-dérive ! Confirmé en production : c'est PRÉCISÉMENT le
+        # chemin emprunté lors du choix d'un candidat depuis
+        # l'extraction ("Choisir Candidat") — c'est-à-dire TOUS nos
+        # tests vidéo jusqu'ici. Sans ancre fixée ici, la protection
+        # anti-dérive ajoutée dans update() restait silencieusement
+        # désactivée pendant toute la session (la vérification
+        # `if self._anchor_ref is not None` étant toujours fausse),
+        # et le diagnostic DIAGNOSTIC-IDENTITE ne s'affichait jamais.
+        # Explique très probablement le verrouillage occasionnel sur
+        # la mauvaise personne observé dans nos tests : la référence
+        # pouvait dériver librement, sans aucun garde-fou, depuis le
+        # tout début de chaque session réelle.
+        self._anchor_ref         = emb.copy()
         self._memorized          = True
         self._memorizing         = False
         self.candidate_embedding = emb
