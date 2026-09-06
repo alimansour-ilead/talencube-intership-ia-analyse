@@ -3109,6 +3109,10 @@ async def ws_analyze_realtime(websocket: WebSocket):
     # pleinement la présence — normalement 2, renforcé à 4 après une
     # longue série d'échecs réels (voir explication au point d'usage).
     _required_confirmations = 2
+    # ← AJOUT : compteur de désaccords consécutifs de la vérification
+    # périodique — exige 2 avant d'agir (voir explication au point
+    # d'usage plus bas).
+    _periodic_disagree_count = 0
     # ← AJOUT : dernier track_id DeepSort ayant validé une
     # correspondance — permet de détecter un changement de piste
     # (signal indépendant du visage) pour la vérification croisée.
@@ -3206,10 +3210,11 @@ async def ws_analyze_realtime(websocket: WebSocket):
         # déclenché (bbox invalide, hors zone, absence confirmée par
         # la fenêtre glissante, etc.) — centraliser ici évite d'oublier
         # un site d'appel.
-        nonlocal _recently_present, _consecutive_successes, _last_matched_track_id
+        nonlocal _recently_present, _consecutive_successes, _last_matched_track_id, _periodic_disagree_count
         _recently_present = False
         _consecutive_successes = 0
         _last_matched_track_id = None
+        _periodic_disagree_count = 0
         # ← PATCH v7.0 (#19) : expose la cause diagnostiquée plutôt
         # qu'un simple "absent" opaque, pour permettre de distinguer
         # un vrai départ du candidat d'un problème de qualité vidéo.
@@ -3332,7 +3337,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
         locked_cx = cx; locked_cy = cy
         _needs_lock = False
         _cache_key  = None; _cache_sim = None
-        _rej_count  = 0; _memo_fails = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0; _last_matched_track_id = None
+        _rej_count  = 0; _memo_fails = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0; _last_matched_track_id = None; _periodic_disagree_count = 0
 
         print(f"[WS] ✅ Lock id={bt.track_id} ({cx:.0f},{cy:.0f}) "
               f"sim={best_sim:.3f} first={first_lock} dist={best_dist:.0f}px")
@@ -3449,7 +3454,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
                 _needs_lock         = False
                 _cache_key          = None
                 _cache_sim          = None
-                _rej_count          = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0; _last_matched_track_id = None
+                _rej_count          = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0; _last_matched_track_id = None; _periodic_disagree_count = 0
                 _memo_fails         = 0
                 _initial_zone_cx    = None
                 _initial_zone_cy    = None
@@ -3547,7 +3552,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
             if tm.state == State.ABANDONED:
                 tm.reset_tracking()
                 _cache_key = None; _cache_sim = None
-                _rej_count = 0; _memo_fails = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0; _last_matched_track_id = None
+                _rej_count = 0; _memo_fails = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0; _last_matched_track_id = None; _periodic_disagree_count = 0
 
             # ← AJOUT : restauration rapide depuis l'état de tracking
             # partagé (Redis), AVANT le flux classique ci-dessous.
@@ -3993,7 +3998,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
                             locked_cx = cx_k; locked_cy = cy_k
                             _initial_zone_cx = cx_k; _initial_zone_cy = cy_k
                             tm.zone.define(cx_k, cy_k, W, H)
-                            _cache_key = None; _cache_sim = None; _rej_count = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0; _last_matched_track_id = None
+                            _cache_key = None; _cache_sim = None; _rej_count = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0; _last_matched_track_id = None; _periodic_disagree_count = 0
                             found_dark = True
                             print(f"[WS] ✅ Sorti zone {zone_label} "
                                   f"({cx_k:.0f},{cy_k:.0f}) "
@@ -4350,32 +4355,63 @@ async def ws_analyze_realtime(websocket: WebSocket):
                             loop, executor, tm.identity.verify_precise,
                             face_img_padded, 0.55)
                     if not _precise_ok_periodic:
-                        print(f"[WS] 🚨 Vérification périodique — "
-                              f"modèle précis en désaccord "
+                        # ← FIX : exige 2 désaccords CONSÉCUTIFS de la
+                        # vérification périodique avant d'agir, au lieu
+                        # d'un seul. Confirmé en test vidéo : le bon
+                        # candidat pouvait rester marqué "absent"
+                        # pendant 10+ secondes d'affilée — le modèle de
+                        # repli (buffalo_sc à haute résolution, pas
+                        # buffalo_m) produit parfois un score PLUS BAS
+                        # que le modèle rapide sur certaines frames du
+                        # bon candidat (faux négatif isolé), et un seul
+                        # désaccord suffisait à tout remettre en
+                        # question — l'empêchant de jamais accumuler
+                        # les confirmations nécessaires. Un second
+                        # désaccord consécutif reste un signal fort
+                        # (la vraie mauvaise personne échouerait de
+                        # façon répétée), tout en tolérant un simple
+                        # coup de malchance ponctuel sur le bon
+                        # candidat.
+                        _periodic_disagree_count += 1
+                        print(f"[WS] ⚠️ Vérification périodique — "
+                              f"désaccord {_periodic_disagree_count}/2 "
                               f"(sim_precise={_precise_sim_periodic:.3f}) "
-                              f"— session existante remise en question")
-                        if _verify_history:
-                            _verify_history.pop()
-                            _verify_history.append(
-                                (_time_module.time(), False))
-                        _consecutive_successes = 0
-                        result["candidate_status"] = (
-                            "present" if _recently_present
-                            else "uncertain")
-                        if _recently_present:
-                            result["emotion"]    = _last_emotion
-                            result["confidence"] = _last_confidence
-                            if _last_metrics:
-                                result["candidate_metrics"] = _last_metrics
-                        result["bbox"] = [x1,y1,x2,y2]
-                        await websocket.send_json(
-                            convert_to_serializable(result))
-                        if (audio_b64 and (not active_audio_task or
-                                active_audio_task.done())):
-                            active_audio_task = asyncio.create_task(
-                                _process_audio_async(
-                                    audio_b64, websocket, loop))
-                        continue
+                              f"— en attente de confirmation")
+                        if _periodic_disagree_count < 2:
+                            # Premier désaccord isolé — toléré, ne
+                            # remet pas encore la session en question.
+                            pass
+                        else:
+                            print(f"[WS] 🚨 Vérification périodique — "
+                                  f"2 désaccords confirmés — session "
+                                  f"existante remise en question")
+                            if _verify_history:
+                                _verify_history.pop()
+                                _verify_history.append(
+                                    (_time_module.time(), False))
+                            _consecutive_successes    = 0
+                            _periodic_disagree_count  = 0
+                            result["candidate_status"] = (
+                                "present" if _recently_present
+                                else "uncertain")
+                            if _recently_present:
+                                result["emotion"]    = _last_emotion
+                                result["confidence"] = _last_confidence
+                                if _last_metrics:
+                                    result["candidate_metrics"] = _last_metrics
+                            result["bbox"] = [x1,y1,x2,y2]
+                            await websocket.send_json(
+                                convert_to_serializable(result))
+                            if (audio_b64 and (not active_audio_task or
+                                    active_audio_task.done())):
+                                active_audio_task = asyncio.create_task(
+                                    _process_audio_async(
+                                        audio_b64, websocket, loop))
+                            continue
+                    else:
+                        # ← Un accord remet le compteur à zéro — seuls
+                        # des désaccords VRAIMENT consécutifs comptent.
+                        _periodic_disagree_count = 0
 
                 if _consecutive_successes < _required_confirmations:
                     print(f"[WS] 🔸 Succès {_consecutive_successes}/"
@@ -4571,7 +4607,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
                                       float(tight_r[2]),float(tight_r[3])]
                             tm.force_track(bt_r.track_id, bbox_r)
                             locked_cx = cx_r; locked_cy = cy_r
-                            _rej_count = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0; _last_matched_track_id = None
+                            _rej_count = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0; _last_matched_track_id = None; _periodic_disagree_count = 0
                             tm.zone.define(cx_r, cy_r, W, H)
                             _initial_zone_cx = cx_r; _initial_zone_cy = cy_r
                             result["tracking"]["bbox"]          = bbox_r
@@ -4656,7 +4692,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
                         _process_audio_async(audio_b64, websocket, loop))
                 continue
 
-            _rej_count = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0; _last_matched_track_id = None
+            _rej_count = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0; _last_matched_track_id = None; _periodic_disagree_count = 0
             # ← RUN_IN_EXECUTOR (chemin principal) : mise à jour de la
             # référence ArcFace, appelée à chaque frame validée.
             await _run_sync(loop, executor, tm.identity.update,
