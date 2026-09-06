@@ -3204,6 +3204,8 @@ async def ws_analyze_realtime(websocket: WebSocket):
         # la fenêtre glissante, etc.) — centraliser ici évite d'oublier
         # un site d'appel.
         nonlocal _recently_present, _consecutive_successes, _last_matched_track_id, _periodic_disagree_count
+        print(f"[WS] 🔍 DIAG-RESET point=send_absent raison={reason} "
+              f"consecutive_avant={_consecutive_successes}")
         _recently_present = False
         _consecutive_successes = 0
         _last_matched_track_id = None
@@ -3330,6 +3332,8 @@ async def ws_analyze_realtime(websocket: WebSocket):
         locked_cx = cx; locked_cy = cy
         _needs_lock = False
         _cache_key  = None; _cache_sim = None
+        print(f"[WS] 🔍 DIAG-RESET point=verrouillage_initial "
+              f"consecutive_avant={_consecutive_successes}")
         _rej_count  = 0; _memo_fails = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0; _last_matched_track_id = None; _periodic_disagree_count = 0
 
         print(f"[WS] ✅ Lock id={bt.track_id} ({cx:.0f},{cy:.0f}) "
@@ -3447,6 +3451,8 @@ async def ws_analyze_realtime(websocket: WebSocket):
                 _needs_lock         = False
                 _cache_key          = None
                 _cache_sim          = None
+                print(f"[WS] 🔍 DIAG-RESET point=lock_secondaire "
+                      f"consecutive_avant={_consecutive_successes}")
                 _rej_count          = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0; _last_matched_track_id = None; _periodic_disagree_count = 0
                 _memo_fails         = 0
                 _initial_zone_cx    = None
@@ -3545,6 +3551,8 @@ async def ws_analyze_realtime(websocket: WebSocket):
             if tm.state == State.ABANDONED:
                 tm.reset_tracking()
                 _cache_key = None; _cache_sim = None
+                print(f"[WS] 🔍 DIAG-RESET point=state_abandoned "
+                      f"consecutive_avant={_consecutive_successes}")
                 _rej_count = 0; _memo_fails = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0; _last_matched_track_id = None; _periodic_disagree_count = 0
 
             # ← AJOUT : restauration rapide depuis l'état de tracking
@@ -3991,6 +3999,8 @@ async def ws_analyze_realtime(websocket: WebSocket):
                             locked_cx = cx_k; locked_cy = cy_k
                             _initial_zone_cx = cx_k; _initial_zone_cy = cy_k
                             tm.zone.define(cx_k, cy_k, W, H)
+                            print(f"[WS] 🔍 DIAG-RESET point=recherche_globale_k "
+                                  f"consecutive_avant={_consecutive_successes}")
                             _cache_key = None; _cache_sim = None; _rej_count = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0; _last_matched_track_id = None; _periodic_disagree_count = 0
                             found_dark = True
                             print(f"[WS] ✅ Sorti zone {zone_label} "
@@ -4514,6 +4524,9 @@ async def ws_analyze_realtime(websocket: WebSocket):
                 # compteur précis (log : "Succès 1/2" répété sans
                 # jamais progresser, alors que les échecs intercalés
                 # étaient uniquement des frames dégradées ignorées).
+                print(f"[WS] 🔍 DIAG-RESET point=echec_reel "
+                      f"consecutive_avant={_consecutive_successes} "
+                      f"sim={similarity:.3f}")
                 _consecutive_successes = 0
                 _rej_count += 1
 
@@ -4619,6 +4632,8 @@ async def ws_analyze_realtime(websocket: WebSocket):
                                       float(tight_r[2]),float(tight_r[3])]
                             tm.force_track(bt_r.track_id, bbox_r)
                             locked_cx = cx_r; locked_cy = cy_r
+                            print(f"[WS] 🔍 DIAG-RESET point=recherche_globale_r "
+                                  f"consecutive_avant={_consecutive_successes}")
                             _rej_count = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0; _last_matched_track_id = None; _periodic_disagree_count = 0
                             tm.zone.define(cx_r, cy_r, W, H)
                             _initial_zone_cx = cx_r; _initial_zone_cy = cy_r
@@ -4704,7 +4719,21 @@ async def ws_analyze_realtime(websocket: WebSocket):
                         _process_audio_async(audio_b64, websocket, loop))
                 continue
 
-            _rej_count = 0; _verify_history.clear(); _recently_present = False; _consecutive_successes = 0; _last_matched_track_id = None; _periodic_disagree_count = 0
+            # ← FIX CRITIQUE : ce point est atteint par le chemin de
+            # succès (is_candidate=True, après avoir passé les
+            # vérifications de fraîcheur) — mais _consecutive_successes
+            # ne doit JAMAIS être remis à zéro ici, seulement sur un
+            # vrai échec (déjà géré plus haut dans la branche d'échec).
+            # Confirmé en production (log trié chronologiquement) : le
+            # compteur repassait à "1/2" une frame sur deux, alors
+            # qu'AUCUN échec n'apparaissait entre les deux — ce reset
+            # inconditionnel annulait la confirmation qu'on venait
+            # juste de valider. Conséquence concrète : le calcul réel
+            # des métriques (qui ne s'exécute qu'une fois la
+            # confirmation validée) tournait deux fois moins souvent
+            # que prévu, doublant le temps nécessaire pour obtenir des
+            # métriques significatives.
+            _rej_count = 0; _verify_history.clear(); _recently_present = False; _last_matched_track_id = None; _periodic_disagree_count = 0
             # ← RUN_IN_EXECUTOR (chemin principal) : mise à jour de la
             # référence ArcFace, appelée à chaque frame validée.
             await _run_sync(loop, executor, tm.identity.update,
