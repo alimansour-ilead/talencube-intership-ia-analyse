@@ -410,6 +410,36 @@ except Exception as e:
     print(f"[ArcFace] ⚠️ Instance rapide indisponible ({e}) — "
           f"fallback sur l'instance standard pour verify()")
 
+# ── ArcFace PRÉCIS (pour reconfirmation après coupure uniquement) ──
+# ← AJOUT : instance plus précise que celle utilisée en continu,
+# réservée aux moments critiques de reconfirmation après une longue
+# coupure (voir _required_confirmations dans le flux temps réel).
+# Confirmé en test vidéo : le modèle rapide (buffalo_sc, 88%
+# précision sur CPU) peut produire une similarité élevée et STABLE
+# (pas un simple coup de chance isolé) pour deux personnes
+# différentes dans certaines conditions de luminosité — aucun nombre
+# de confirmations supplémentaires ne peut corriger ça si le modèle
+# lui-même manque de pouvoir de discrimination. Sur GPU, shared_arcface
+# est déjà buffalo_l (99% précision) — pas besoin d'instance séparée,
+# la vitesse le permet déjà. Sur CPU, buffalo_m offre un compromis
+# précision/vitesse acceptable pour un usage ponctuel (pas à chaque
+# frame), contrairement à un usage en continu où il serait trop lent.
+try:
+    if _has_gpu:
+        precise_arcface = shared_arcface  # déjà buffalo_l, assez précis
+    elif shared_arcface is not None:
+        precise_arcface = _SharedFA(name='buffalo_m',
+                                    providers=['CPUExecutionProvider'])
+        precise_arcface.prepare(ctx_id=-1, det_size=(640, 640))
+        print(f"[ArcFace] ✅ Instance précise buffalo_m chargée "
+              f"(reconfirmation après coupure uniquement)")
+    else:
+        precise_arcface = None
+except Exception as e:
+    precise_arcface = None
+    print(f"[ArcFace] ⚠️ Instance précise indisponible ({e}) — "
+          f"reconfirmation utilisera le modèle rapide standard")
+
 # ── FaceAnalyzer MediaPipe ────────────────────────────────────────
 print("Chargement FaceAnalyzer (MediaPipe)...")
 try:
@@ -1740,7 +1770,8 @@ def _analyze_video_sync(file_bytes: bytes, filename: str,
         tracking_manager = TrackingManager(
             max_age=300, n_init=3,
             shared_arcface=shared_arcface,
-            fast_arcface=fast_arcface
+            fast_arcface=fast_arcface,
+            precise_arcface=precise_arcface
         )
         face_analyzer_local = FaceAnalyzer()
 
@@ -3007,7 +3038,8 @@ async def ws_analyze_realtime(websocket: WebSocket):
     loop = asyncio.get_running_loop()
 
     tm                 = TrackingManager(shared_arcface=shared_arcface,
-                                         fast_arcface=fast_arcface)
+                                         fast_arcface=fast_arcface,
+                                         precise_arcface=precise_arcface)
     face_analyzer_global.reset()
     face_analyzer      = face_analyzer_global
     emotion_ws_history = []
@@ -3371,7 +3403,8 @@ async def ws_analyze_realtime(websocket: WebSocket):
             if msg.get("reset") is True:
                 print("[WS] 🔄 Reset demandé — réinitialisation complète du tracking")
                 tm = TrackingManager(shared_arcface=shared_arcface,
-                                     fast_arcface=fast_arcface)
+                                     fast_arcface=fast_arcface,
+                                     precise_arcface=precise_arcface)
                 face_analyzer_global.reset()
                 emotion_ws_history.clear()
                 _frame_counter      = 0
@@ -4188,7 +4221,56 @@ async def ws_analyze_realtime(websocket: WebSocket):
                               f"({_rej_count} échecs) — renforce à "
                               f"{_required_confirmations} confirmations "
                               f"requises avant présence")
-                    _rej_count = 0
+                        # ← AJOUT : seconde opinion via le modèle
+                        # ArcFace précis, spécifiquement au moment
+                        # critique de reconfirmation après une longue
+                        # coupure. Le modèle rapide (utilisé à chaque
+                        # frame) peut manquer de pouvoir de
+                        # discrimination entre deux visages proches ;
+                        # le modèle précis offre un second avis
+                        # indépendant, avec le budget de latence que
+                        # ce moment ponctuel (pas à chaque frame)
+                        # permet.
+                        _precise_ok, _precise_sim = await _run_sync(
+                            loop, executor, tm.identity.verify_precise,
+                            face_img_padded)
+                        if not _precise_ok:
+                            print(f"[WS] 🚨 Modèle précis en désaccord "
+                                  f"(sim_precise={_precise_sim:.3f}) — "
+                                  f"rejeté malgré le modèle rapide validé")
+                            # ← Annule l'entrée de succès déjà ajoutée
+                            # à la fenêtre glissante plus haut dans ce
+                            # bloc — ce rejet doit compter comme un
+                            # échec pour la détection d'absence, pas
+                            # comme une réussite.
+                            if _verify_history:
+                                _verify_history.pop()
+                                _verify_history.append(
+                                    (_time_module.time(), False))
+                            # ← Rejet immédiat : ne pas essayer de
+                            # retomber sur le chemin normal d'échec
+                            # (structuré différemment plus bas dans
+                            # cette fonction) — traiter directement ce
+                            # cas ici, avec une réponse "incertain"
+                            # cohérente avec le reste du flux.
+                            result["candidate_status"] = (
+                                "present" if _recently_present
+                                else "uncertain")
+                            if _recently_present:
+                                result["emotion"]    = _last_emotion
+                                result["confidence"] = _last_confidence
+                                if _last_metrics:
+                                    result["candidate_metrics"] = _last_metrics
+                            result["bbox"] = [x1,y1,x2,y2]
+                            await websocket.send_json(
+                                convert_to_serializable(result))
+                            if (audio_b64 and (not active_audio_task or
+                                    active_audio_task.done())):
+                                active_audio_task = asyncio.create_task(
+                                    _process_audio_async(
+                                        audio_b64, websocket, loop))
+                            continue
+                _rej_count = 0
                 _consecutive_successes += 1
                 if _consecutive_successes < _required_confirmations:
                     print(f"[WS] 🔸 Succès {_consecutive_successes}/"

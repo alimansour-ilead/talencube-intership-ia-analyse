@@ -371,7 +371,8 @@ def _frame_quality(face_img) -> Tuple[float, float]:
 
 
 class IdentityManager:
-    def __init__(self, shared_arcface=None, fast_arcface=None):
+    def __init__(self, shared_arcface=None, fast_arcface=None,
+                 precise_arcface=None):
         self._embeddings      = []
         self._ref             = None
         self._ref_ratio       = None
@@ -409,6 +410,9 @@ class IdentityManager:
         # référence compte plus que la vitesse. Sans instance dédiée,
         # fallback sur self._arcface (comportement identique à avant).
         self._fast_arcface = fast_arcface
+        # ← AJOUT : instance plus précise, réservée à la reconfirmation
+        # après une longue coupure (voir verify_precise() plus bas).
+        self._precise_arcface = precise_arcface
 
         if shared_arcface is not None:
             self._arcface  = shared_arcface
@@ -474,8 +478,15 @@ class IdentityManager:
             print(f"[Identity] ✅ Référence chargée depuis cache preview "
                   f"dim={emb.shape[0]}D (sans face_img)")
 
-    def _arcface_embed(self, img):
-        if self._arcface is None or img is None or img.size == 0:
+    def _arcface_embed(self, img, use_precise: bool = False):
+        # ← AJOUT : use_precise=True utilise l'instance ArcFace plus
+        # précise (self._precise_arcface, buffalo_m) au lieu de
+        # l'instance standard — réservé aux moments critiques de
+        # reconfirmation après une longue coupure (voir verify()).
+        _model = (self._precise_arcface if use_precise
+                  and self._precise_arcface is not None
+                  else self._arcface)
+        if _model is None or img is None or img.size == 0:
             return None
         h, w = img.shape[:2]
         if w < 30 or h < 30:
@@ -509,13 +520,14 @@ class IdentityManager:
         self._last_embed_low_conf = False
         for name, frame in strategies:
             try:
-                faces = self._arcface.get(frame)
+                faces = _model.get(frame)
                 if not faces:
                     continue
                 best = max(faces, key=lambda f: f.det_score)
                 if best.det_score < CFG.MIN_DET_SCORE:
                     continue
-                print(f"[ArcFace] ✅ {name} score={best.det_score:.3f}")
+                print(f"[ArcFace] ✅ {name} score={best.det_score:.3f}"
+                      f"{' [précis]' if use_precise else ''}")
                 emb  = best.embedding.astype(np.float32)
                 norm = np.linalg.norm(emb)
                 return emb/norm if norm > 0 else emb
@@ -529,7 +541,7 @@ class IdentityManager:
         # compensation (voir TOLERANCE_ARCFACE_FALLBACK).
         for name, frame in strategies:
             try:
-                faces = self._arcface.get(frame)
+                faces = _model.get(frame)
                 if not faces:
                     continue
                 best = max(faces, key=lambda f: f.det_score)
@@ -834,6 +846,41 @@ class IdentityManager:
             score = self._combined(face_img, emb, sim)
             return score >= seuil, score
 
+    def verify_precise(self, face_img, threshold: float = None) -> Tuple[bool, float]:
+        """
+        ← AJOUT : vérification avec l'instance ArcFace plus précise
+        (buffalo_m sur CPU, ou buffalo_l déjà partagé sur GPU) —
+        réservée aux moments critiques de reconfirmation après une
+        longue coupure, jamais utilisée pour le suivi continu à
+        chaque frame (trop lente pour cet usage sur CPU).
+
+        Confirmé en test vidéo : le modèle rapide (buffalo_sc, 88%
+        précision sur CPU) peut produire une similarité élevée et
+        STABLE (pas un simple coup de chance isolé) pour deux
+        personnes différentes dans certaines conditions de
+        luminosité. Un modèle plus précis, avec un meilleur pouvoir
+        de discrimination, offre une seconde opinion indépendante
+        avant de faire confiance à une reconfirmation après une vraie
+        absence.
+        """
+        if self._ref is None or self._precise_arcface is None:
+            # Pas d'instance précise disponible — le résultat de
+            # verify() standard doit alors suffire (voir main.py, qui
+            # ne bloque pas sur ce résultat si aucune instance précise
+            # n'a pu être chargée au démarrage).
+            return True, 1.0
+
+        emb = self._arcface_embed(face_img, use_precise=True)
+        if emb is None:
+            return False, 0.0
+
+        seuil = threshold if threshold is not None else self.TOLERANCE
+        sim   = float(np.dot(self._ref, emb))
+        ok    = sim >= seuil
+        print(f"[Identity] 🔬 verify_precise sim={sim:.3f} "
+              f"seuil={seuil:.2f} {'✅' if ok else '❌'}")
+        return ok, sim
+
     def _combined(self, img, emb, sim_emb) -> float:
         W     = (0.55, 0.10, 0.15, 0.20)
         ratio = hue = hist = None
@@ -1044,13 +1091,15 @@ class IdentityManager:
 
 class TrackingManager:
     def __init__(self, max_age=300, n_init=3,
-                 nn_budget=100, shared_arcface=None, fast_arcface=None):
+                 nn_budget=100, shared_arcface=None, fast_arcface=None,
+                 precise_arcface=None):
         self.tracker  = DeepSort(max_age=max_age, n_init=n_init,
                                   nn_budget=nn_budget,
                                   embedder="mobilenet",
                                   half=False, bgr=True)
         self.identity = IdentityManager(shared_arcface=shared_arcface,
-                                        fast_arcface=fast_arcface)
+                                        fast_arcface=fast_arcface,
+                                        precise_arcface=precise_arcface)
         self.zone     = ZoneManager()
         self.speed    = SpeedFilter()
         self.kalman   = KalmanPredictor()
