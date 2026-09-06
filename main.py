@@ -4260,9 +4260,18 @@ async def ws_analyze_realtime(websocket: WebSocket):
                     # en latence reste limité : cette vérification ne
                     # tourne qu'au tout début d'une séquence de
                     # confirmation, jamais à chaque frame en continu.
+                    #
+                    # ← FIX : seuil explicitement plus strict (0.55)
+                    # au lieu du seuil permissif par défaut (~0.25-0.38
+                    # selon qualité d'image). Confirmé en production :
+                    # sans ce seuil renforcé, verify_precise() utilisait
+                    # le même seuil que la vérification normale — le
+                    # modèle plus précis n'apportait alors AUCUNE
+                    # protection supplémentaire réelle, puisque la
+                    # barre d'acceptation restait identique.
                     _precise_ok, _precise_sim = await _run_sync(
                         loop, executor, tm.identity.verify_precise,
-                        face_img_padded)
+                        face_img_padded, 0.55)
                     if not _precise_ok:
                         print(f"[WS] 🚨 Modèle précis en désaccord "
                               f"(sim_precise={_precise_sim:.3f}) — "
