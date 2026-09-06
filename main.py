@@ -4227,55 +4227,59 @@ async def ws_analyze_realtime(websocket: WebSocket):
                               f"({_rej_count} échecs) — renforce à "
                               f"{_required_confirmations} confirmations "
                               f"requises avant présence")
-                        # ← AJOUT : seconde opinion via le modèle
-                        # ArcFace précis, spécifiquement au moment
-                        # critique de reconfirmation après une longue
-                        # coupure. Le modèle rapide (utilisé à chaque
-                        # frame) peut manquer de pouvoir de
-                        # discrimination entre deux visages proches ;
-                        # le modèle précis offre un second avis
-                        # indépendant, avec le budget de latence que
-                        # ce moment ponctuel (pas à chaque frame)
-                        # permet.
-                        _precise_ok, _precise_sim = await _run_sync(
-                            loop, executor, tm.identity.verify_precise,
-                            face_img_padded)
-                        if not _precise_ok:
-                            print(f"[WS] 🚨 Modèle précis en désaccord "
-                                  f"(sim_precise={_precise_sim:.3f}) — "
-                                  f"rejeté malgré le modèle rapide validé")
-                            # ← Annule l'entrée de succès déjà ajoutée
-                            # à la fenêtre glissante plus haut dans ce
-                            # bloc — ce rejet doit compter comme un
-                            # échec pour la détection d'absence, pas
-                            # comme une réussite.
-                            if _verify_history:
-                                _verify_history.pop()
-                                _verify_history.append(
-                                    (_time_module.time(), False))
-                            # ← Rejet immédiat : ne pas essayer de
-                            # retomber sur le chemin normal d'échec
-                            # (structuré différemment plus bas dans
-                            # cette fonction) — traiter directement ce
-                            # cas ici, avec une réponse "incertain"
-                            # cohérente avec le reste du flux.
-                            result["candidate_status"] = (
-                                "present" if _recently_present
-                                else "uncertain")
-                            if _recently_present:
-                                result["emotion"]    = _last_emotion
-                                result["confidence"] = _last_confidence
-                                if _last_metrics:
-                                    result["candidate_metrics"] = _last_metrics
-                            result["bbox"] = [x1,y1,x2,y2]
-                            await websocket.send_json(
-                                convert_to_serializable(result))
-                            if (audio_b64 and (not active_audio_task or
-                                    active_audio_task.done())):
-                                active_audio_task = asyncio.create_task(
-                                    _process_audio_async(
-                                        audio_b64, websocket, loop))
-                            continue
+                    # ← ÉLARGI : la seconde opinion via le modèle
+                    # ArcFace précis s'applique désormais à TOUTE
+                    # nouvelle séquence de confirmation (premier
+                    # succès après n'importe quelle interruption),
+                    # pas seulement après une longue coupure (≥5
+                    # échecs). Confirmé en test vidéo : une personne
+                    # différente peut obtenir un score élevé et STABLE
+                    # dès la première tentative, sans jamais accumuler
+                    # assez d'échecs pour déclencher l'ancienne
+                    # condition — cette protection ne se déclenchait
+                    # alors JAMAIS, peu importe sa pertinence. Le coût
+                    # en latence reste limité : cette vérification ne
+                    # tourne qu'au tout début d'une séquence de
+                    # confirmation, jamais à chaque frame en continu.
+                    _precise_ok, _precise_sim = await _run_sync(
+                        loop, executor, tm.identity.verify_precise,
+                        face_img_padded)
+                    if not _precise_ok:
+                        print(f"[WS] 🚨 Modèle précis en désaccord "
+                              f"(sim_precise={_precise_sim:.3f}) — "
+                              f"rejeté malgré le modèle rapide validé")
+                        # ← Annule l'entrée de succès déjà ajoutée
+                        # à la fenêtre glissante plus haut dans ce
+                        # bloc — ce rejet doit compter comme un
+                        # échec pour la détection d'absence, pas
+                        # comme une réussite.
+                        if _verify_history:
+                            _verify_history.pop()
+                            _verify_history.append(
+                                (_time_module.time(), False))
+                        # ← Rejet immédiat : ne pas essayer de
+                        # retomber sur le chemin normal d'échec
+                        # (structuré différemment plus bas dans
+                        # cette fonction) — traiter directement ce
+                        # cas ici, avec une réponse "incertain"
+                        # cohérente avec le reste du flux.
+                        result["candidate_status"] = (
+                            "present" if _recently_present
+                            else "uncertain")
+                        if _recently_present:
+                            result["emotion"]    = _last_emotion
+                            result["confidence"] = _last_confidence
+                            if _last_metrics:
+                                result["candidate_metrics"] = _last_metrics
+                        result["bbox"] = [x1,y1,x2,y2]
+                        await websocket.send_json(
+                            convert_to_serializable(result))
+                        if (audio_b64 and (not active_audio_task or
+                                active_audio_task.done())):
+                            active_audio_task = asyncio.create_task(
+                                _process_audio_async(
+                                    audio_b64, websocket, loop))
+                        continue
                 _rej_count = 0
                 _consecutive_successes += 1
                 if _consecutive_successes < _required_confirmations:
@@ -4596,11 +4600,27 @@ async def ws_analyze_realtime(websocket: WebSocket):
                 loop, executor, predict_emotion_enhanced, face_img)
 
             if confidence < 0.40:
+                # ← FIX : applique le même correctif de stabilité que
+                # les autres branches "incertain" (qualité dégradée,
+                # tolérance) — réutilise le dernier état confirmé
+                # (émotion + métriques) au lieu de n'envoyer AUCUNE
+                # métrique du tout. Confirmé en test vidéo : ce bloc
+                # se déclenche souvent en boucle sur les premières
+                # secondes (émotion difficile à classifier clairement
+                # au tout début), et l'absence totale de métriques
+                # pendant ces frames répétées causait un blocage
+                # prolongé à zéro (jusqu'à ~40 secondes observées)
+                # avant la toute première mise à jour réelle.
                 result.update({
-                    "candidate_status": "uncertain",
+                    "candidate_status": "present" if _recently_present else "uncertain",
                     "warning": f"Confiance faible ({confidence*100:.0f}%)",
                     "bbox":    [x1,y1,x2,y2]
                 })
+                if _recently_present:
+                    result["emotion"]    = _last_emotion
+                    result["confidence"] = _last_confidence
+                    if _last_metrics:
+                        result["candidate_metrics"] = _last_metrics
                 await websocket.send_json(convert_to_serializable(result))
                 if (audio_b64 and (not active_audio_task or
                         active_audio_task.done())):
