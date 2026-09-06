@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxext6 \
     build-essential \
     curl \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # ← Casse le cache Docker à partir d'ici — change la valeur ci-dessous
@@ -39,6 +40,36 @@ RUN mkdir -p models/mediapipe && \
     https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task && \
     curl -L -o models/mediapipe/pose_landmarker_lite.task \
     https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task
+
+# ← AJOUT : préchargement des modèles InsightFace À LA CONSTRUCTION de
+# l'image, au lieu de les laisser se télécharger au démarrage du
+# conteneur (comportement par défaut d'insightface, sans ligne
+# explicite ici auparavant — contrairement aux modèles MediaPipe et
+# aux cascades OpenCV ci-dessus, déjà préchargés de cette façon).
+#
+# Confirmé en production : buffalo_m échouait systématiquement à se
+# charger sur Railway (probablement un timeout ou un souci réseau au
+# démarrage — plus probable pour ce modèle, plus volumineux que
+# buffalo_sc, qui lui réussissait à charger). Précharger ici élimine
+# complètement cette dépendance réseau au runtime : le modèle est
+# déjà présent sur le disque de l'image avant même que le conteneur
+# ne démarre, quelle que soit la condition réseau de Railway à ce
+# moment précis.
+#
+# buffalo_sc reste aussi préchargé ici par cohérence (déjà fonctionnel
+# via le téléchargement au runtime, mais autant fiabiliser les deux
+# de la même façon et gagner quelques secondes au démarrage).
+RUN mkdir -p /root/.insightface/models && \
+    curl -L -o /tmp/buffalo_sc.zip \
+    https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip && \
+    unzip -q /tmp/buffalo_sc.zip -d /root/.insightface/models/buffalo_sc && \
+    rm /tmp/buffalo_sc.zip && \
+    curl -L -o /tmp/buffalo_m.zip \
+    https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_m.zip && \
+    unzip -q /tmp/buffalo_m.zip -d /root/.insightface/models/buffalo_m && \
+    rm /tmp/buffalo_m.zip && \
+    echo "Modèles InsightFace préchargés avec succès" && \
+    ls -la /root/.insightface/models/
 
 COPY . .
 

@@ -424,21 +424,40 @@ except Exception as e:
 # la vitesse le permet déjà. Sur CPU, buffalo_m offre un compromis
 # précision/vitesse acceptable pour un usage ponctuel (pas à chaque
 # frame), contrairement à un usage en continu où il serait trop lent.
+#
+# ← FIX CRITIQUE : confirmé en production (marqueur de diagnostic) —
+# le téléchargement de buffalo_m échoue systématiquement sur Railway
+# (probablement une restriction réseau ou un temps d'attente dépassé),
+# désactivant SILENCIEUSEMENT toute cette protection depuis son ajout
+# (verify_precise() retournait toujours "OK" par défaut, sans jamais
+# vérifier quoi que ce soit). Retombe désormais sur shared_arcface
+# (l'instance standard, det_size=640, déjà chargée avec succès et
+# utilisée pour la mémorisation) au lieu de None en cas d'échec —
+# garantit une seconde opinion FONCTIONNELLE dans tous les cas, même
+# si elle utilise le même modèle buffalo_sc que le chemin rapide :
+# la résolution de détection plus élevée (640 vs 320) reste une
+# vérification réellement indépendante et plus rigoureuse.
 try:
     if _has_gpu:
         precise_arcface = shared_arcface  # déjà buffalo_l, assez précis
     elif shared_arcface is not None:
-        precise_arcface = _SharedFA(name='buffalo_m',
-                                    providers=['CPUExecutionProvider'])
-        precise_arcface.prepare(ctx_id=-1, det_size=(640, 640))
-        print(f"[ArcFace] ✅ Instance précise buffalo_m chargée "
-              f"(reconfirmation après coupure uniquement)")
+        try:
+            precise_arcface = _SharedFA(name='buffalo_m',
+                                        providers=['CPUExecutionProvider'])
+            precise_arcface.prepare(ctx_id=-1, det_size=(640, 640))
+            print(f"[ArcFace] ✅ Instance précise buffalo_m chargée "
+                  f"(reconfirmation après coupure uniquement)")
+        except Exception as e_m:
+            print(f"[ArcFace] ⚠️ buffalo_m indisponible ({e_m}) — "
+                  f"repli sur l'instance standard (det_size=640) "
+                  f"pour la reconfirmation")
+            precise_arcface = shared_arcface
     else:
         precise_arcface = None
 except Exception as e:
-    precise_arcface = None
+    precise_arcface = shared_arcface if shared_arcface is not None else None
     print(f"[ArcFace] ⚠️ Instance précise indisponible ({e}) — "
-          f"reconfirmation utilisera le modèle rapide standard")
+          f"repli sur l'instance standard si disponible")
 
 # ← AJOUT : marqueur de statut sans ambiguïté possible, imprimé dans
 # TOUS les cas (succès, échec, ou totalement absent) — pour éliminer
