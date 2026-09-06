@@ -440,6 +440,12 @@ except Exception as e:
     print(f"[ArcFace] ⚠️ Instance précise indisponible ({e}) — "
           f"reconfirmation utilisera le modèle rapide standard")
 
+# ← AJOUT : marqueur de statut sans ambiguïté possible, imprimé dans
+# TOUS les cas (succès, échec, ou totalement absent) — pour éliminer
+# tout doute lors du diagnostic en production.
+print(f"[ArcFace] 📌 STATUT-PRECISE-ARCFACE: "
+      f"{'DISPONIBLE' if precise_arcface is not None else 'INDISPONIBLE (None)'}")
+
 # ── FaceAnalyzer MediaPipe ────────────────────────────────────────
 print("Chargement FaceAnalyzer (MediaPipe)...")
 try:

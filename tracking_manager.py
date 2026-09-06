@@ -864,10 +864,14 @@ class IdentityManager:
         absence.
         """
         if self._ref is None or self._precise_arcface is None:
-            # Pas d'instance précise disponible — le résultat de
-            # verify() standard doit alors suffire (voir main.py, qui
-            # ne bloque pas sur ce résultat si aucune instance précise
-            # n'a pu être chargée au démarrage).
+            # ← AJOUT : diagnostic explicite — distingue précisément
+            # laquelle des deux conditions a déclenché ce retour
+            # anticipé, plutôt qu'un silence total qui empêchait de
+            # savoir si le modèle précis a bien été transmis jusqu'ici.
+            print(f"[Identity] 📌 verify_precise ignoré — "
+                  f"ref={'absente' if self._ref is None else 'présente'} "
+                  f"precise_arcface="
+                  f"{'absent' if self._precise_arcface is None else 'présent'}")
             return True, 1.0
 
         emb = self._arcface_embed(face_img, use_precise=True)
