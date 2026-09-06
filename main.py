@@ -448,9 +448,20 @@ try:
             print(f"[ArcFace] ✅ Instance précise buffalo_m chargée "
                   f"(reconfirmation après coupure uniquement)")
         except Exception as e_m:
-            print(f"[ArcFace] ⚠️ buffalo_m indisponible ({e_m}) — "
+            # ← AJOUT : diagnostic complet — confirmé en production que
+            # str(exception) retourne une chaîne VIDE pour cet échec
+            # précis ("buffalo_m indisponible ()"), empêchant de savoir
+            # la vraie cause. repr() inclut le TYPE de l'exception même
+            # si son message est vide, et la trace complète localise
+            # précisément où l'échec se produit (téléchargement réseau,
+            # fichier introuvable, nom de modèle invalide, etc.).
+            import traceback as _tb_m
+            print(f"[ArcFace] ⚠️ buffalo_m indisponible "
+                  f"type={type(e_m).__name__} repr={e_m!r} — "
                   f"repli sur l'instance standard (det_size=640) "
                   f"pour la reconfirmation")
+            print(f"[ArcFace] 📋 Trace complète buffalo_m:\n"
+                  f"{_tb_m.format_exc()}")
             precise_arcface = shared_arcface
     else:
         precise_arcface = None
@@ -4243,43 +4254,37 @@ async def ws_analyze_realtime(websocket: WebSocket):
                 # plus le risque qu'il s'agisse d'une autre personne
                 # est élevé — on exige alors davantage de confirmations
                 # avant de faire à nouveau confiance.
-                if _consecutive_successes == 0:
-                    _required_confirmations = (
-                        4 if _rej_count >= 5 else 2)
-                    if _rej_count >= 5:
-                        print(f"[WS] 🛡️ Longue coupure détectée "
-                              f"({_rej_count} échecs) — renforce à "
-                              f"{_required_confirmations} confirmations "
-                              f"requises avant présence")
+                if _consecutive_successes < 2:
+                    if _consecutive_successes == 0:
+                        _required_confirmations = (
+                            4 if _rej_count >= 5 else 2)
+                        if _rej_count >= 5:
+                            print(f"[WS] 🛡️ Longue coupure détectée "
+                                  f"({_rej_count} échecs) — renforce à "
+                                  f"{_required_confirmations} confirmations "
+                                  f"requises avant présence")
                     # ← ÉLARGI : la seconde opinion via le modèle
-                    # ArcFace précis s'applique désormais à TOUTE
-                    # nouvelle séquence de confirmation (premier
-                    # succès après n'importe quelle interruption),
-                    # pas seulement après une longue coupure (≥5
-                    # échecs). Confirmé en test vidéo : une personne
-                    # différente peut obtenir un score élevé et STABLE
-                    # dès la première tentative, sans jamais accumuler
-                    # assez d'échecs pour déclencher l'ancienne
-                    # condition — cette protection ne se déclenchait
-                    # alors JAMAIS, peu importe sa pertinence. Le coût
-                    # en latence reste limité : cette vérification ne
-                    # tourne qu'au tout début d'une séquence de
-                    # confirmation, jamais à chaque frame en continu.
-                    #
-                    # ← FIX : seuil explicitement plus strict (0.55)
-                    # au lieu du seuil permissif par défaut (~0.25-0.38
-                    # selon qualité d'image). Confirmé en production :
-                    # sans ce seuil renforcé, verify_precise() utilisait
-                    # le même seuil que la vérification normale — le
-                    # modèle plus précis n'apportait alors AUCUNE
-                    # protection supplémentaire réelle, puisque la
-                    # barre d'acceptation restait identique.
+                    # ArcFace précis s'applique désormais aux DEUX
+                    # premières frames d'une nouvelle séquence de
+                    # confirmation (pas seulement la toute première).
+                    # Confirmé en test vidéo : même avec la vérification
+                    # unique sur la première frame, un verrouillage sur
+                    # la mauvaise personne pouvait encore se glisser et
+                    # persister quelques secondes (~3-4s) avant d'être
+                    # rattrapé par la vérification périodique — le
+                    # moment juste après une transition reste le plus
+                    # vulnérable, justifiant une vérification renforcée
+                    # spécifiquement à cet instant, sans affecter la
+                    # tolérance déjà en place pour une session établie
+                    # (qui protège le bon candidat des faux négatifs
+                    # isolés du modèle de repli).
                     _precise_ok, _precise_sim = await _run_sync(
                         loop, executor, tm.identity.verify_precise,
                         face_img_padded, 0.55)
                     if not _precise_ok:
                         print(f"[WS] 🚨 Modèle précis en désaccord "
-                              f"(sim_precise={_precise_sim:.3f}) — "
+                              f"(frame {_consecutive_successes+1}/2, "
+                              f"sim_precise={_precise_sim:.3f}) — "
                               f"rejeté malgré le modèle rapide validé")
                         # ← Annule l'entrée de succès déjà ajoutée
                         # à la fenêtre glissante plus haut dans ce
