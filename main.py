@@ -4310,6 +4310,57 @@ async def ws_analyze_realtime(websocket: WebSocket):
                         continue
                 _rej_count = 0
                 _consecutive_successes += 1
+
+                # ← AJOUT : vérification périodique par le modèle
+                # précis MÊME pendant une session déjà confirmée, pas
+                # seulement à la toute première frame d'une nouvelle
+                # séquence de confirmation. Confirmé en test vidéo :
+                # si le passage d'une personne à l'autre se fait sans
+                # jamais accumuler assez d'échecs pour "casser" la
+                # session déjà validée (similarité parfois suffisante
+                # pour l'autre personne aussi sur le seuil normal),
+                # l'ancienne logique ne redéclenchait JAMAIS cette
+                # protection, puisqu'elle ne surveillait que les
+                # reconnexions après une vraie interruption — pas une
+                # session déjà en cours. Cette vérification toutes les
+                # 15 frames (~7-10 secondes selon le rythme réel) reste
+                # peu coûteuse (pas à chaque frame), tout en garantissant
+                # qu'aucune session, même déjà confirmée, ne reste
+                # indéfiniment sans être revalidée par le modèle précis.
+                if (_consecutive_successes > 0 and
+                        _frame_counter % 15 == 0):
+                    _precise_ok_periodic, _precise_sim_periodic = \
+                        await _run_sync(
+                            loop, executor, tm.identity.verify_precise,
+                            face_img_padded, 0.55)
+                    if not _precise_ok_periodic:
+                        print(f"[WS] 🚨 Vérification périodique — "
+                              f"modèle précis en désaccord "
+                              f"(sim_precise={_precise_sim_periodic:.3f}) "
+                              f"— session existante remise en question")
+                        if _verify_history:
+                            _verify_history.pop()
+                            _verify_history.append(
+                                (_time_module.time(), False))
+                        _consecutive_successes = 0
+                        result["candidate_status"] = (
+                            "present" if _recently_present
+                            else "uncertain")
+                        if _recently_present:
+                            result["emotion"]    = _last_emotion
+                            result["confidence"] = _last_confidence
+                            if _last_metrics:
+                                result["candidate_metrics"] = _last_metrics
+                        result["bbox"] = [x1,y1,x2,y2]
+                        await websocket.send_json(
+                            convert_to_serializable(result))
+                        if (audio_b64 and (not active_audio_task or
+                                active_audio_task.done())):
+                            active_audio_task = asyncio.create_task(
+                                _process_audio_async(
+                                    audio_b64, websocket, loop))
+                        continue
+
                 if _consecutive_successes < _required_confirmations:
                     print(f"[WS] 🔸 Succès {_consecutive_successes}/"
                           f"{_required_confirmations} — confirmation "
