@@ -2148,8 +2148,21 @@ def _analyze_video_sync(file_bytes: bytes, filename: str,
                 if (x2-x1) > 20 and (y2-y1) > 20
             ]
 
+            # ← FIX CRITIQUE : remplace consecutive_lost (compteur
+            # local à cette boucle, qui ne s'incrémente QUE quand
+            # get_selected_bbox() renvoie None — ce qui n'arrive QUE
+            # lorsque l'état interne atteint ABANDONED, soit 150
+            # échantillons perdus via CFG.MAX_REID, jamais 2 ni 5 !)
+            # par tracking_manager.lost_count — le compteur INTERNE du
+            # tracker, incrémenté à chaque frame perdue dès l'état
+            # LOST (voir _on_lost() dans tracking_manager.py). Confirmé
+            # en test vidéo : le cadre restait visiblement figé sur
+            # l'ancienne position pendant 6+ secondes malgré la
+            # réduction précédente de MAX_LOST_BEFORE_RELOCK (5→2),
+            # qui n'avait aucun effet réel puisqu'elle ajustait un
+            # compteur qui n'était jamais le vrai facteur bloquant.
             if (tracking_manager.is_tracking_lost() and
-                    consecutive_lost >= MAX_LOST_BEFORE_RELOCK and
+                    tracking_manager.lost_count >= MAX_LOST_BEFORE_RELOCK and
                     tracking_manager.last_bbox is not None and faces):
                 lb     = tracking_manager.last_bbox
                 ref_cx = (lb[0]+lb[2])/2
@@ -3112,6 +3125,17 @@ async def ws_analyze_realtime(websocket: WebSocket):
     # pleinement la présence — normalement 2, renforcé à 4 après une
     # longue série d'échecs réels (voir explication au point d'usage).
     _required_confirmations = 2
+    # ← AJOUT : drapeau persistant — indique qu'au MOINS un
+    # verrouillage complet a déjà eu lieu depuis le début de cette
+    # session. Contrairement à _recently_present (qui se réinitialise
+    # à chaque absence), ce drapeau ne se réinitialise QUE sur une
+    # vraie nouvelle session (nouveau candidat choisi, reset demandé
+    # par le client) — jamais sur une simple absence en cours de
+    # session. Permet de distinguer "jamais encore confirmé" (phase de
+    # scan initiale, où "absent" n'a pas de sens) de "confirmé puis
+    # reperdu" (une vraie absence, où la déclaration immédiate reste
+    # utile). Voir point d'usage plus bas.
+    _ever_confirmed_once = False
     # ← AJOUT : compteur de désaccords consécutifs de la vérification
     # périodique — exige 2 avant d'agir (voir explication au point
     # d'usage plus bas).
@@ -3456,6 +3480,10 @@ async def ws_analyze_realtime(websocket: WebSocket):
                 _last_confidence    = 0.5
                 _last_metrics       = {}
                 _frames_analyzed    = 0
+                # ← AJOUT : vraie nouvelle session — le drapeau doit
+                # repartir à False, contrairement aux resets
+                # d'absence en cours de session qui ne le touchent pas.
+                _ever_confirmed_once = False
                 locked_cx           = None
                 locked_cy           = None
                 _needs_lock         = False
@@ -4438,6 +4466,10 @@ async def ws_analyze_realtime(websocket: WebSocket):
                             _process_audio_async(audio_b64, websocket, loop))
                     continue
 
+                # ← Premier verrouillage complet atteint — marque le
+                # drapeau persistant (voir son initialisation plus haut
+                # pour l'explication complète).
+                _ever_confirmed_once = True
 
             if not is_candidate:
                 # ← AJOUT : quand l'image est déjà signalée comme
@@ -4570,7 +4602,19 @@ async def ws_analyze_realtime(websocket: WebSocket):
                     # encore être du bruit ponctuel sur le bon
                     # candidat, où la prudence du second échantillon
                     # reste utile.
-                    if similarity < 0.10:
+                    # ← FIX : n'applique la déclaration immédiate que
+                    # si un premier verrouillage a DÉJÀ eu lieu au
+                    # moins une fois (_ever_confirmed_once). Confirmé
+                    # en test vidéo : sans cette condition, "CANDIDAT
+                    # ABSENT" s'affichait de façon alarmante dès les
+                    # toutes premières secondes d'une session, PENDANT
+                    # la phase de scan initiale — avant même que le
+                    # candidat n'ait été confirmé une seule fois. Dire
+                    # "absent" n'a pas de sens pour quelqu'un qui n'a
+                    # jamais encore été confirmé présent ; la fenêtre
+                    # glissante normale (2 échantillons) reste plus
+                    # appropriée pour cette phase initiale.
+                    if similarity < 0.10 and _ever_confirmed_once:
                         _window_says_absent = True
                     else:
                         _window_says_absent = _verify_window_says_absent()
