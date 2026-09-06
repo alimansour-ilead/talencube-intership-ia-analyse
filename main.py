@@ -4327,8 +4327,24 @@ async def ws_analyze_realtime(websocket: WebSocket):
                 # peu coûteuse (pas à chaque frame), tout en garantissant
                 # qu'aucune session, même déjà confirmée, ne reste
                 # indéfiniment sans être revalidée par le modèle précis.
+                # ← FIX : intervalle réduit de 15 à 4 frames (~2-3
+                # secondes selon le rythme réel). Confirmé visuellement
+                # (analyse image par image, 8fps) : un changement de
+                # personne peut être accepté comme "EN ANALYSE" DÈS SA
+                # TOUTE PREMIÈRE FRAME (moins de 0.15s après son
+                # apparition), sans jamais déclencher un vrai échec
+                # ArcFace qui ferait chuter _consecutive_successes à
+                # zéro — dans ce cas, AUCUNE de nos protections
+                # (2 confirmations, renforcement après coupure, seuil
+                # strict) ne s'active jamais, puisqu'elles ne se
+                # déclenchent qu'au moment de ce retour à zéro. Réduire
+                # l'intervalle à 4 limite la fenêtre de vulnérabilité à
+                # quelques secondes au lieu de potentiellement toute la
+                # durée d'une session, au prix d'un coût de calcul plus
+                # fréquent (accepté, cette vérification reste plus
+                # légère qu'ArcFace standard).
                 if (_consecutive_successes > 0 and
-                        _frame_counter % 15 == 0):
+                        _frame_counter % 4 == 0):
                     _precise_ok_periodic, _precise_sim_periodic = \
                         await _run_sync(
                             loop, executor, tm.identity.verify_precise,
