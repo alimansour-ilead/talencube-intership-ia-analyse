@@ -3150,17 +3150,6 @@ async def ws_analyze_realtime(websocket: WebSocket):
     # pleinement la présence — normalement 2, renforcé à 4 après une
     # longue série d'échecs réels (voir explication au point d'usage).
     _required_confirmations = 2
-    # ← AJOUT : drapeau persistant — indique qu'au MOINS un
-    # verrouillage complet a déjà eu lieu depuis le début de cette
-    # session. Contrairement à _recently_present (qui se réinitialise
-    # à chaque absence), ce drapeau ne se réinitialise QUE sur une
-    # vraie nouvelle session (nouveau candidat choisi, reset demandé
-    # par le client) — jamais sur une simple absence en cours de
-    # session. Permet de distinguer "jamais encore confirmé" (phase de
-    # scan initiale, où "absent" n'a pas de sens) de "confirmé puis
-    # reperdu" (une vraie absence, où la déclaration immédiate reste
-    # utile). Voir point d'usage plus bas.
-    _ever_confirmed_once = False
     # ← AJOUT : compteur de désaccords consécutifs de la vérification
     # périodique — exige 2 avant d'agir (voir explication au point
     # d'usage plus bas).
@@ -3505,10 +3494,6 @@ async def ws_analyze_realtime(websocket: WebSocket):
                 _last_confidence    = 0.5
                 _last_metrics       = {}
                 _frames_analyzed    = 0
-                # ← AJOUT : vraie nouvelle session — le drapeau doit
-                # repartir à False, contrairement aux resets
-                # d'absence en cours de session qui ne le touchent pas.
-                _ever_confirmed_once = False
                 locked_cx           = None
                 locked_cy           = None
                 _needs_lock         = False
@@ -4491,14 +4476,14 @@ async def ws_analyze_realtime(websocket: WebSocket):
                             _process_audio_async(audio_b64, websocket, loop))
                     continue
 
-                # ← Premier verrouillage complet atteint — marque le
-                # drapeau persistant (voir son initialisation plus haut
-                # pour l'explication complète).
-                if not _ever_confirmed_once:
+                # ← Chronométrage de la toute première confirmation
+                # (voir _first_success_logged, initialisé au début de
+                # la session) — indépendant de toute logique d'absence.
+                if not _first_success_logged:
                     print(f"[WS] ⏱️ PREMIÈRE confirmation ('EN ANALYSE') "
                           f"atteinte: {_time_module.time()-_t_session_start:.2f}s "
                           f"après acceptation de la connexion")
-                _ever_confirmed_once = True
+                    _first_success_logged = True
 
             if not is_candidate:
                 # ← AJOUT : quand l'image est déjà signalée comme
@@ -4618,35 +4603,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
                     # _verify_window_says_absent() pour l'explication.
                     _verify_history.append((_time_module.time(), False))
                     _tol = (5 if _n_candidates == 1 else 3)  # gardé pour l'affichage
-                    # ← FIX : réduit le délai de déclaration d'absence
-                    # d'environ une frame quand l'échec est CLAIREMENT
-                    # net (similarité très basse, <0.10) — pas besoin
-                    # d'attendre le deuxième échantillon habituellement
-                    # requis (_VERIFY_WINDOW_MIN_SAMPLES=2) si ce
-                    # premier échec est déjà sans ambiguïté possible.
-                    # Un résultat proche du hasard total (0.01-0.08)
-                    # n'a pas besoin d'une seconde confirmation pour
-                    # être digne de confiance — contrairement à un
-                    # échec plus modéré (0.10-0.30), qui pourrait
-                    # encore être du bruit ponctuel sur le bon
-                    # candidat, où la prudence du second échantillon
-                    # reste utile.
-                    # ← FIX : n'applique la déclaration immédiate que
-                    # si un premier verrouillage a DÉJÀ eu lieu au
-                    # moins une fois (_ever_confirmed_once). Confirmé
-                    # en test vidéo : sans cette condition, "CANDIDAT
-                    # ABSENT" s'affichait de façon alarmante dès les
-                    # toutes premières secondes d'une session, PENDANT
-                    # la phase de scan initiale — avant même que le
-                    # candidat n'ait été confirmé une seule fois. Dire
-                    # "absent" n'a pas de sens pour quelqu'un qui n'a
-                    # jamais encore été confirmé présent ; la fenêtre
-                    # glissante normale (2 échantillons) reste plus
-                    # appropriée pour cette phase initiale.
-                    if similarity < 0.10 and _ever_confirmed_once:
-                        _window_says_absent = True
-                    else:
-                        _window_says_absent = _verify_window_says_absent()
+                    _window_says_absent = _verify_window_says_absent()
 
                 if not _window_says_absent:
                     print(f"[WS] ⚠️ Échec temporaire "
