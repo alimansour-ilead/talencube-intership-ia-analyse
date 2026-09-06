@@ -4405,8 +4405,18 @@ async def ws_analyze_realtime(websocket: WebSocket):
                 # durée d'une session, au prix d'un coût de calcul plus
                 # fréquent (accepté, cette vérification reste plus
                 # légère qu'ArcFace standard).
+                # ← RESSERRÉ (4 → 2) : réduit encore la fenêtre de
+                # vulnérabilité — confirmé en test vidéo qu'un
+                # verrouillage sur la mauvaise personne peut durer
+                # ~2-3 secondes avant d'être rattrapé. La tolérance de
+                # 2 désaccords consécutifs (voir plus bas) continue de
+                # protéger le bon candidat contre un faux négatif
+                # isolé du modèle de repli — resserrer cet intervalle
+                # ne fait qu'accélérer la DÉTECTION d'un désaccord
+                # réel, sans changer le nombre de désaccords requis
+                # avant d'agir.
                 if (_consecutive_successes > 0 and
-                        _frame_counter % 4 == 0):
+                        _frame_counter % 2 == 0):
                     _precise_ok_periodic, _precise_sim_periodic = \
                         await _run_sync(
                             loop, executor, tm.identity.verify_precise,
@@ -4615,7 +4625,23 @@ async def ws_analyze_realtime(websocket: WebSocket):
                     # _verify_window_says_absent() pour l'explication.
                     _verify_history.append((_time_module.time(), False))
                     _tol = (5 if _n_candidates == 1 else 3)  # gardé pour l'affichage
-                    _window_says_absent = _verify_window_says_absent()
+                    # ← RÉINTRODUIT (version simplifiée) : accélère la
+                    # déclaration d'absence quand l'échec est CLAIREMENT
+                    # net (similarité <0.10, quasi aléatoire) — pas
+                    # besoin d'attendre un second échantillon si ce
+                    # premier échec est déjà sans ambiguïté. Un essai
+                    # précédent (drapeau dédié _ever_confirmed_once)
+                    # avait causé un faux "CANDIDAT ABSENT" pendant la
+                    # toute première phase de scan — corrigé cette fois
+                    # avec un garde-fou plus simple et robuste :
+                    # _frame_counter > 5 (quelques frames de grâce après
+                    # le début de la session, suffisant pour dépasser le
+                    # bruit initial, sans dépendre d'un état de
+                    # confirmation plus complexe à synchroniser).
+                    if similarity < 0.10 and _frame_counter > 5:
+                        _window_says_absent = True
+                    else:
+                        _window_says_absent = _verify_window_says_absent()
 
                 if not _window_says_absent:
                     print(f"[WS] ⚠️ Échec temporaire "
