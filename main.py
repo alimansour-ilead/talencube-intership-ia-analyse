@@ -4468,7 +4468,32 @@ async def ws_analyze_realtime(websocket: WebSocket):
                 # Une similarité négative est tout aussi inexploitable
                 # qu'une similarité proche de zéro sur une frame de
                 # qualité dégradée — même traitement pour les deux.
-                if _quality_degraded:
+                #
+                # ← FIX CRITIQUE : exception quand la similarité est
+                # EXTRÊMEMENT basse (< 0.15), même sur une frame
+                # dégradée. Confirmé en production : l'environnement de
+                # l'AUTRE personne (luminosité forte, ex: 170-181)
+                # déclenchait systématiquement ce même filtre qualité,
+                # exemptant TOUS ses échecs de compter contre la
+                # tolérance — empêchant la fenêtre de détection
+                # d'absence d'accumuler la moindre preuve, peu importe
+                # combien de temps elle restait à l'écran (log observé :
+                # 6 échecs consécutifs, tous ignorés, "Candidat absent"
+                # jamais déclenché). Une vraie dégradation d'image
+                # produit généralement encore une similarité modérée
+                # pour le bon candidat (0.15-0.35) — une valeur aussi
+                # basse que 0.002 ou -0.03 ressemble à un vrai désaccord
+                # d'identité, pas à du bruit de mesure. Sous ce seuil,
+                # on traite la frame comme un vrai échec, qualité
+                # dégradée ou non.
+                _clearly_different_person = similarity < 0.15
+                if _quality_degraded and _clearly_different_person:
+                    print(f"[WS] 🎯 Frame dégradée MAIS similarité "
+                          f"trop basse pour être du bruit "
+                          f"(sim={similarity:.3f} < 0.15) — comptée "
+                          f"comme un vrai échec malgré la qualité "
+                          f"d'image dégradée")
+                if _quality_degraded and not _clearly_different_person:
                     print(f"[WS] 🌫️ Frame ignorée (qualité dégradée, "
                           f"seuil abaissé à {dynamic_threshold_ws:.2f}, "
                           f"sim={similarity:.3f}) — pas comptée contre "

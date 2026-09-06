@@ -62,14 +62,21 @@ RUN mkdir -p models/mediapipe && \
 RUN mkdir -p /root/.insightface/models && \
     curl -L -o /tmp/buffalo_sc.zip \
     https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip && \
-    unzip -q /tmp/buffalo_sc.zip -d /root/.insightface/models/buffalo_sc && \
-    rm /tmp/buffalo_sc.zip && \
+    mkdir -p /tmp/extract_sc && \
+    unzip -q /tmp/buffalo_sc.zip -d /tmp/extract_sc && \
+    mkdir -p /root/.insightface/models/buffalo_sc && \
+    find /tmp/extract_sc -name "*.onnx" -exec mv {} /root/.insightface/models/buffalo_sc/ \; && \
+    rm -rf /tmp/buffalo_sc.zip /tmp/extract_sc && \
     curl -L -o /tmp/buffalo_m.zip \
     https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_m.zip && \
-    unzip -q /tmp/buffalo_m.zip -d /root/.insightface/models/buffalo_m && \
-    rm /tmp/buffalo_m.zip && \
+    mkdir -p /tmp/extract_m && \
+    unzip -q /tmp/buffalo_m.zip -d /tmp/extract_m && \
+    mkdir -p /root/.insightface/models/buffalo_m && \
+    find /tmp/extract_m -name "*.onnx" -exec mv {} /root/.insightface/models/buffalo_m/ \; && \
+    rm -rf /tmp/buffalo_m.zip /tmp/extract_m && \
     echo "Modèles InsightFace préchargés avec succès" && \
-    ls -la /root/.insightface/models/
+    echo "--- buffalo_sc ---" && ls -la /root/.insightface/models/buffalo_sc/ && \
+    echo "--- buffalo_m ---" && ls -la /root/.insightface/models/buffalo_m/
 
 COPY . .
 
