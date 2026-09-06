@@ -2114,7 +2114,17 @@ def _analyze_video_sync(file_bytes: bytes, filename: str,
 
         start_analysis_t       = lock_t if lock_t is not None else 0.0
         consecutive_lost       = 0
-        MAX_LOST_BEFORE_RELOCK = 5
+        # ← FIX : réduit de 5 à 2 — confirmé en test vidéo que 5
+        # échantillons perdus, à raison d'1 échantillon par seconde
+        # (sample_rate=1.0 plus haut), représentent 5 SECONDES
+        # complètes avant toute tentative de recalage sur la nouvelle
+        # position du candidat après un déplacement — bien trop long,
+        # le cadre de suivi restait visiblement figé sur l'ancienne
+        # position pendant tout ce temps. 2 échantillons (2 secondes)
+        # garde une marge contre un problème de détection isolé et
+        # ponctuel (une frame ratée), tout en réagissant bien plus vite
+        # à un vrai déplacement du candidat.
+        MAX_LOST_BEFORE_RELOCK = 2
         rej_count              = 0
 
         print(f"[analyze_video] 📊 Analyse depuis t={start_analysis_t:.1f}s")
@@ -4547,7 +4557,23 @@ async def ws_analyze_realtime(websocket: WebSocket):
                     # _verify_window_says_absent() pour l'explication.
                     _verify_history.append((_time_module.time(), False))
                     _tol = (5 if _n_candidates == 1 else 3)  # gardé pour l'affichage
-                    _window_says_absent = _verify_window_says_absent()
+                    # ← FIX : réduit le délai de déclaration d'absence
+                    # d'environ une frame quand l'échec est CLAIREMENT
+                    # net (similarité très basse, <0.10) — pas besoin
+                    # d'attendre le deuxième échantillon habituellement
+                    # requis (_VERIFY_WINDOW_MIN_SAMPLES=2) si ce
+                    # premier échec est déjà sans ambiguïté possible.
+                    # Un résultat proche du hasard total (0.01-0.08)
+                    # n'a pas besoin d'une seconde confirmation pour
+                    # être digne de confiance — contrairement à un
+                    # échec plus modéré (0.10-0.30), qui pourrait
+                    # encore être du bruit ponctuel sur le bon
+                    # candidat, où la prudence du second échantillon
+                    # reste utile.
+                    if similarity < 0.10:
+                        _window_says_absent = True
+                    else:
+                        _window_says_absent = _verify_window_says_absent()
 
                 if not _window_says_absent:
                     print(f"[WS] ⚠️ Échec temporaire "
