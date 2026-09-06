@@ -1302,6 +1302,11 @@ def _extract_candidates_preview_sync(file_bytes: bytes, filename: str):
     import time
     import uuid as _uuid_module
     tmp_path = fixed_path = None
+    # ← AJOUT : chronométrage précis de chaque étape — objectif :
+    # savoir enfin où le temps est réellement passé (écriture disque,
+    # réparation FFmpeg, décodage/scan, ou détection YOLO+ArcFace par
+    # frame), plutôt que de deviner à l'aveugle avant d'optimiser.
+    _t_start = time.time()
     try:
         # ← FIX : identifiant unique ajouté au nom du fichier temporaire.
         # Avant, le chemin était construit UNIQUEMENT à partir du nom
@@ -1321,8 +1326,10 @@ def _extract_candidates_preview_sync(file_bytes: bytes, filename: str):
                                   f"fixed_preview_{_unique}_{filename}")
         with open(tmp_path, "wb") as buf:
             buf.write(file_bytes)
+        print(f"[Preview] ⏱️ Écriture disque: {time.time()-_t_start:.1f}s")
 
         print(f"[Preview] Réparation: {filename}")
+        _t_repair_start = time.time()
         # ← OPTIMISATION MAJEURE : -t 35 limite le réencodage FFmpeg aux
         # 35 premières secondes (30s de scan + marge), au lieu de toute
         # la vidéo. C'était le vrai goulot d'étranglement restant :
@@ -1339,6 +1346,8 @@ def _extract_candidates_preview_sync(file_bytes: bytes, filename: str):
              '-c:a', 'aac', '-movflags', '+faststart', fixed_path],
             capture_output=True, timeout=300
         )
+        print(f"[Preview] ⏱️ Réparation FFmpeg: "
+              f"{time.time()-_t_repair_start:.1f}s")
         video_path = (fixed_path
                       if repair.returncode == 0 and
                       os.path.exists(fixed_path) and
@@ -1411,6 +1420,7 @@ def _extract_candidates_preview_sync(file_bytes: bytes, filename: str):
               f"Frames: {len(sample_times)} (pas={SAMPLE_STEP}s)")
 
         known_candidates = []
+        _t_scan_start = time.time()
 
         for t in sample_times:
             try:
@@ -1613,6 +1623,10 @@ def _extract_candidates_preview_sync(file_bytes: bytes, filename: str):
             })
 
         print(f"[Preview] {len(result_candidates)} candidat(s) détecté(s)")
+        print(f"[Preview] ⏱️ Scan+détection (YOLO+ArcFace, "
+              f"{len(sample_times)} frames): "
+              f"{time.time()-_t_scan_start:.1f}s")
+        print(f"[Preview] ⏱️ TOTAL fonction: {time.time()-_t_start:.1f}s")
         return ({
             'success':    True,
             'candidates': result_candidates,
@@ -3077,10 +3091,21 @@ def _extract_embedding_from_face(face_img):
 async def ws_analyze_realtime(websocket: WebSocket):
     await websocket.accept()
     loop = asyncio.get_running_loop()
+    # ← AJOUT : chronométrage du démarrage de la session — objectif :
+    # savoir si le délai perçu ("prend du temps pour commencer à
+    # analyser") vient de l'initialisation de cette fonction elle-même
+    # (rapide, attendu) ou du temps réel avant la toute première
+    # frame confirmée (probablement le vrai facteur, dépendant du
+    # réseau/de l'arrivée des frames côté client — voir le print au
+    # premier succès plus bas dans cette fonction).
+    _t_session_start = _time_module.time()
+    _first_success_logged = False
 
     tm                 = TrackingManager(shared_arcface=shared_arcface,
                                          fast_arcface=fast_arcface,
                                          precise_arcface=precise_arcface)
+    print(f"[WS] ⏱️ TrackingManager initialisé: "
+          f"{_time_module.time()-_t_session_start:.2f}s après acceptation")
     face_analyzer_global.reset()
     face_analyzer      = face_analyzer_global
     emotion_ws_history = []
@@ -4469,6 +4494,10 @@ async def ws_analyze_realtime(websocket: WebSocket):
                 # ← Premier verrouillage complet atteint — marque le
                 # drapeau persistant (voir son initialisation plus haut
                 # pour l'explication complète).
+                if not _ever_confirmed_once:
+                    print(f"[WS] ⏱️ PREMIÈRE confirmation ('EN ANALYSE') "
+                          f"atteinte: {_time_module.time()-_t_session_start:.2f}s "
+                          f"après acceptation de la connexion")
                 _ever_confirmed_once = True
 
             if not is_candidate:
