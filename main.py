@@ -425,46 +425,28 @@ except Exception as e:
 # précision/vitesse acceptable pour un usage ponctuel (pas à chaque
 # frame), contrairement à un usage en continu où il serait trop lent.
 #
-# ← FIX CRITIQUE : confirmé en production (marqueur de diagnostic) —
-# le téléchargement de buffalo_m échoue systématiquement sur Railway
-# (probablement une restriction réseau ou un temps d'attente dépassé),
-# désactivant SILENCIEUSEMENT toute cette protection depuis son ajout
-# (verify_precise() retournait toujours "OK" par défaut, sans jamais
-# vérifier quoi que ce soit). Retombe désormais sur shared_arcface
-# (l'instance standard, det_size=640, déjà chargée avec succès et
-# utilisée pour la mémorisation) au lieu de None en cas d'échec —
-# garantit une seconde opinion FONCTIONNELLE dans tous les cas, même
-# si elle utilise le même modèle buffalo_sc que le chemin rapide :
-# la résolution de détection plus élevée (640 vs 320) reste une
-# vérification réellement indépendante et plus rigoureuse.
+# ← FIX CRITIQUE : confirmé en production — buffalo_m a fini par se
+# charger avec succès (grâce au correctif du Dockerfile), mais ça a
+# révélé un bug bien plus grave que le problème qu'il devait résoudre.
+# buffalo_m et buffalo_sc (utilisé pour créer la référence de départ
+# lors de la mémorisation) sont deux MODÈLES DIFFÉRENTS, avec des
+# espaces vectoriels d'embeddings INCOMPATIBLES — comparer un
+# embedding buffalo_m avec une référence calculée en buffalo_sc ne
+# veut rien dire, un peu comme comparer des mesures en mètres avec
+# des mesures en pieds sans conversion. Confirmé par les logs :
+# verify_precise() rejetait SYSTÉMATIQUEMENT le bon candidat
+# (sim=0.02-0.05, quasi aléatoire) même quand le modèle rapide était
+# très confiant (sim=0.80-0.98) — buffalo_m ne "voit" simplement pas
+# la référence de la même façon.
+#
+# Pas de correctif simple possible sans maintenir une référence
+# séparée spécifiquement calculée en buffalo_m (changement important,
+# pas fait dans l'immédiat) — on désactive donc buffalo_m pour cet
+# usage et on retombe systématiquement sur shared_arcface (même
+# modèle que la référence, résolution différente seulement — la
+# seule comparaison valide avec la référence actuelle).
 try:
-    if _has_gpu:
-        precise_arcface = shared_arcface  # déjà buffalo_l, assez précis
-    elif shared_arcface is not None:
-        try:
-            precise_arcface = _SharedFA(name='buffalo_m',
-                                        providers=['CPUExecutionProvider'])
-            precise_arcface.prepare(ctx_id=-1, det_size=(640, 640))
-            print(f"[ArcFace] ✅ Instance précise buffalo_m chargée "
-                  f"(reconfirmation après coupure uniquement)")
-        except Exception as e_m:
-            # ← AJOUT : diagnostic complet — confirmé en production que
-            # str(exception) retourne une chaîne VIDE pour cet échec
-            # précis ("buffalo_m indisponible ()"), empêchant de savoir
-            # la vraie cause. repr() inclut le TYPE de l'exception même
-            # si son message est vide, et la trace complète localise
-            # précisément où l'échec se produit (téléchargement réseau,
-            # fichier introuvable, nom de modèle invalide, etc.).
-            import traceback as _tb_m
-            print(f"[ArcFace] ⚠️ buffalo_m indisponible "
-                  f"type={type(e_m).__name__} repr={e_m!r} — "
-                  f"repli sur l'instance standard (det_size=640) "
-                  f"pour la reconfirmation")
-            print(f"[ArcFace] 📋 Trace complète buffalo_m:\n"
-                  f"{_tb_m.format_exc()}")
-            precise_arcface = shared_arcface
-    else:
-        precise_arcface = None
+    precise_arcface = shared_arcface if shared_arcface is not None else None
 except Exception as e:
     precise_arcface = shared_arcface if shared_arcface is not None else None
     print(f"[ArcFace] ⚠️ Instance précise indisponible ({e}) — "
