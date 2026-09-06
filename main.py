@@ -1400,8 +1400,20 @@ def _extract_candidates_preview_sync(file_bytes: bytes, filename: str):
         SCAN_DURATION_CAP = 30.0
         scan_dur = min(total_dur, SCAN_DURATION_CAP)
 
+        # ← FIX : intervalle doublé (0.5s → 1.0s) — confirmé en
+        # production (chronométrage précis) que ce scan peut prendre
+        # jusqu'à ~150 secondes (60 frames × YOLO+ArcFace), et qu'à
+        # cause du GIL Python (verrou global, partagé même entre pools
+        # de threads séparés), ce calcul intensif peut retenir le
+        # verrou assez longtemps pour ralentir sévèrement les sessions
+        # temps réel simultanées sur la même réplique Railway (jusqu'à
+        # 18-20s observés pour une simple création d'objet, qui
+        # devrait être quasi instantanée). Réduire de moitié le nombre
+        # de frames scannées (60→30) réduit d'autant la durée de
+        # rétention du GIL, sans changement d'architecture plus lourd
+        # (isolation par processus séparés) qui serait plus risqué.
         if scan_dur <= 60:
-            SAMPLE_STEP = 0.5
+            SAMPLE_STEP = 1.0
         elif scan_dur <= 300:
             SAMPLE_STEP = 1.5
         else:
