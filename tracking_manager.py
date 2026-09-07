@@ -41,6 +41,16 @@ import numpy as np
 from deep_sort_realtime.deepsort_tracker import DeepSort
 from filterpy.kalman import KalmanFilter
 
+# ← AJOUT : import de base pour construire mp.Image lors du calcul de
+# la signature géométrique — l'instance FaceLandmarker elle-même est
+# fournie de l'extérieur (shared_landmarker, réutilisant celle déjà
+# chargée par face_analyzer.py), pas créée ici.
+try:
+    import mediapipe as _mp
+    _MEDIAPIPE_GEOM_AVAILABLE = True
+except Exception:
+    _MEDIAPIPE_GEOM_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -372,7 +382,7 @@ def _frame_quality(face_img) -> Tuple[float, float]:
 
 class IdentityManager:
     def __init__(self, shared_arcface=None, fast_arcface=None,
-                 precise_arcface=None):
+                 precise_arcface=None, shared_landmarker=None):
         self._embeddings      = []
         self._ref             = None
         self._ref_ratio       = None
@@ -413,6 +423,39 @@ class IdentityManager:
         # ← AJOUT : instance plus précise, réservée à la reconfirmation
         # après une longue coupure (voir verify_precise() plus bas).
         self._precise_arcface = precise_arcface
+
+        # ← AJOUT : signature géométrique du visage (proportions
+        # faciales via MediaPipe FaceLandmarker) — signal indépendant
+        # d'ArcFace, calculé une fois à la mémorisation et comparé lors
+        # des reconfirmations critiques (voir verify_geometric() plus
+        # bas). None tant que la mémorisation n'a pas eu lieu, ou si
+        # aucune instance partagée n'a été transmise (repli silencieux
+        # : cette vérification est alors simplement ignorée, sans
+        # bloquer le reste du système).
+        #
+        # ← IMPORTANT : réutilise l'instance DÉJÀ chargée par
+        # face_analyzer.py (self._face_lm, transmise ici via
+        # shared_landmarker) au lieu d'en charger une seconde — évite
+        # de dupliquer inutilement le même modèle en mémoire, et évite
+        # tout risque de conflit si l'API MediaPipe Tasks ne supporte
+        # pas bien plusieurs instances concurrentes du même modèle.
+        #
+        # ⚠️ Note de conception : cette instance est déjà partagée
+        # entre TOUTES les sessions temps réel concurrentes via
+        # face_analyzer_global (pattern préexistant, pas introduit
+        # ici) — plusieurs threads peuvent donc déjà appeler .detect()
+        # dessus en parallèle avant ce changement. Ajouter cet usage
+        # supplémentaire ne change pas la nature du risque de
+        # concurrence, seulement sa fréquence. Si des erreurs
+        # MediaPipe liées à la concurrence apparaissent en production,
+        # ce sera le premier endroit à vérifier (envisager alors une
+        # instance dédiée par thread, ou un verrou explicite).
+        self._geometric_ref: Optional[np.ndarray] = None
+        self._landmarker = shared_landmarker
+        if self._landmarker is None:
+            print(f"[Identity] ⚠️ Aucune instance FaceLandmarker "
+                  f"partagée transmise — signature géométrique "
+                  f"ignorée pour cette session")
 
         if shared_arcface is not None:
             self._arcface  = shared_arcface
@@ -474,6 +517,11 @@ class IdentityManager:
             self._visual_ref(face_img)
             print(f"[Identity] ✅ Référence chargée depuis cache preview "
                   f"dim={emb.shape[0]}D (avec face_img)")
+            # ← AJOUT : signature géométrique — second signal
+            # indépendant, calculé au même moment que la référence
+            # ArcFace (voir set_geometric_reference() pour les
+            # détails).
+            self.set_geometric_reference(face_img)
         else:
             print(f"[Identity] ✅ Référence chargée depuis cache preview "
                   f"dim={emb.shape[0]}D (sans face_img)")
@@ -746,6 +794,14 @@ class IdentityManager:
         self._embeddings.append(emb)
         if len(self._embeddings) == 1 and face_img is not None:
             self._visual_ref(face_img)
+            # ← AJOUT : signature géométrique — calculée sur la même
+            # première frame acceptée, indépendamment du nombre total
+            # de frames de mémorisation (contrairement à la référence
+            # ArcFace, qui elle est une moyenne sur plusieurs frames —
+            # une seule frame nette suffit pour des proportions
+            # faciales, qui ne varient pas d'une frame à l'autre pour
+            # une même personne).
+            self.set_geometric_reference(face_img)
         print(f"[Identity] Frame "
               f"{len(self._embeddings)}/{CFG.MEMORIZE_FRAMES} acceptée")
 
@@ -884,6 +940,140 @@ class IdentityManager:
         print(f"[Identity] 🔬 verify_precise sim={sim:.3f} "
               f"seuil={seuil:.2f} {'✅' if ok else '❌'}")
         return ok, sim
+
+    # ← AJOUT : indices de repères MediaPipe (topologie standard à
+    # 468/478 points) utilisés pour construire la signature
+    # géométrique. Choisis pour représenter des proportions faciales
+    # stables (peu affectées par l'expression : sourire, sourcils
+    # levés, etc.), contrairement à des points sur la bouche ou les
+    # sourcils qui bougent beaucoup selon l'émotion.
+    _LM_OEIL_G       = 33   # coin externe œil gauche
+    _LM_OEIL_D       = 263  # coin externe œil droit
+    _LM_OEIL_G_INT   = 133  # coin interne œil gauche
+    _LM_OEIL_D_INT   = 362  # coin interne œil droit
+    _LM_NEZ_POINTE   = 1    # pointe du nez
+    _LM_MENTON       = 152  # bas du menton
+    _LM_JOUE_G       = 234  # bord du visage, joue gauche
+    _LM_JOUE_D       = 454  # bord du visage, joue droite
+    _LM_FRONT        = 10   # haut du front
+
+    def _compute_geometric_signature(self, face_img) -> Optional[np.ndarray]:
+        """
+        ← AJOUT : calcule une signature géométrique du visage à partir
+        des proportions faciales (distances entre repères MediaPipe,
+        normalisées par la distance interoculaire pour rester stable
+        peu importe la distance à la caméra ou le zoom). Signal
+        COMPLÈTEMENT INDÉPENDANT des embeddings profonds d'ArcFace —
+        si deux visages se ressemblent trop pour ArcFace, leurs
+        proportions réelles (largeur de mâchoire, longueur du nez,
+        etc.) peuvent encore les différencier.
+
+        Retourne None si MediaPipe est indisponible ou si aucun
+        visage n'est détecté sur cette image — dans ce cas,
+        verify_geometric() ignore simplement cette vérification
+        plutôt que de bloquer le système.
+        """
+        if self._landmarker is None or face_img is None or face_img.size == 0:
+            return None
+        try:
+            rgb = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
+            mp_image = _mp.Image(image_format=_mp.ImageFormat.SRGB, data=rgb)
+            result = self._landmarker.detect(mp_image)
+            if not result.face_landmarks:
+                return None
+            lm = result.face_landmarks[0]
+
+            def _pt(idx):
+                p = lm[idx]
+                return np.array([p.x, p.y, p.z], dtype=np.float32)
+
+            oeil_g     = _pt(self._LM_OEIL_G)
+            oeil_d     = _pt(self._LM_OEIL_D)
+            oeil_g_int = _pt(self._LM_OEIL_G_INT)
+            oeil_d_int = _pt(self._LM_OEIL_D_INT)
+            nez        = _pt(self._LM_NEZ_POINTE)
+            menton     = _pt(self._LM_MENTON)
+            joue_g     = _pt(self._LM_JOUE_G)
+            joue_d     = _pt(self._LM_JOUE_D)
+            front      = _pt(self._LM_FRONT)
+
+            # ← Distance interoculaire — base de normalisation pour
+            # que la signature reste stable peu importe le zoom/la
+            # distance à la caméra (mêmes proportions relatives).
+            dist_inter_oculaire = np.linalg.norm(oeil_g - oeil_d)
+            if dist_inter_oculaire < 1e-6:
+                return None
+
+            signature = np.array([
+                np.linalg.norm(oeil_g_int - oeil_d_int) / dist_inter_oculaire,
+                np.linalg.norm(nez - menton) / dist_inter_oculaire,
+                np.linalg.norm(joue_g - joue_d) / dist_inter_oculaire,
+                np.linalg.norm(front - menton) / dist_inter_oculaire,
+                np.linalg.norm(nez - front) / dist_inter_oculaire,
+                np.linalg.norm(oeil_g - joue_g) / dist_inter_oculaire,
+                np.linalg.norm(oeil_d - joue_d) / dist_inter_oculaire,
+                np.linalg.norm(nez - oeil_g) / dist_inter_oculaire,
+                np.linalg.norm(nez - oeil_d) / dist_inter_oculaire,
+            ], dtype=np.float32)
+            return signature
+        except Exception as _e_geo:
+            print(f"[Identity] ⚠️ Signature géométrique échouée "
+                  f"({_e_geo})")
+            return None
+
+    def set_geometric_reference(self, face_img) -> None:
+        """
+        ← AJOUT : calcule et mémorise la signature géométrique de
+        référence — à appeler une fois, au moment de la mémorisation
+        initiale du candidat (mêmes moments que set_reference_embedding
+        / _finalize). Si le calcul échoue (visage pas assez net,
+        MediaPipe indisponible), _geometric_ref reste à None et
+        verify_geometric() ignorera silencieusement cette vérification
+        pour toute la session.
+        """
+        sig = self._compute_geometric_signature(face_img)
+        if sig is not None:
+            self._geometric_ref = sig
+            print(f"[Identity] 📐 Signature géométrique de référence "
+                  f"enregistrée")
+        else:
+            print(f"[Identity] ⚠️ Signature géométrique de référence "
+                  f"non disponible — cette vérification sera ignorée")
+
+    def verify_geometric(self, face_img,
+                          tolerance: float = 0.15) -> Tuple[bool, float]:
+        """
+        ← AJOUT : compare la signature géométrique de la frame
+        actuelle avec la référence enregistrée à la mémorisation.
+        Signal indépendant d'ArcFace — utilisé en complément de
+        verify_precise() lors des reconfirmations critiques.
+
+        Retourne (True, 0.0) si cette vérification n'est pas
+        disponible (pas de référence, ou détection échouée sur cette
+        frame précise) — un signal absent ne doit jamais, à lui seul,
+        bloquer une reconfirmation par ailleurs valide.
+
+        `tolerance` : écart relatif maximum accepté par composante de
+        la signature (0.15 = 15% — les proportions faciales d'une
+        même personne varient peu d'une frame à l'autre, contrairement
+        à deux personnes différentes qui diffèrent souvent de 20%+
+        sur au moins plusieurs composantes).
+        """
+        if self._geometric_ref is None:
+            return True, 0.0
+        sig = self._compute_geometric_signature(face_img)
+        if sig is None:
+            return True, 0.0
+
+        ecarts_relatifs = np.abs(sig - self._geometric_ref) / (
+            np.abs(self._geometric_ref) + 1e-6)
+        ecart_moyen = float(np.mean(ecarts_relatifs))
+        ok = ecart_moyen <= tolerance
+        print(f"[Identity] 📐 verify_geometric écart_moyen="
+              f"{ecart_moyen:.3f} tolérance={tolerance:.2f} "
+              f"{'✅' if ok else '❌'}")
+        return ok, ecart_moyen
+
 
     def _combined(self, img, emb, sim_emb) -> float:
         W     = (0.55, 0.10, 0.15, 0.20)
@@ -1096,14 +1286,15 @@ class IdentityManager:
 class TrackingManager:
     def __init__(self, max_age=300, n_init=3,
                  nn_budget=100, shared_arcface=None, fast_arcface=None,
-                 precise_arcface=None):
+                 precise_arcface=None, shared_landmarker=None):
         self.tracker  = DeepSort(max_age=max_age, n_init=n_init,
                                   nn_budget=nn_budget,
                                   embedder="mobilenet",
                                   half=False, bgr=True)
         self.identity = IdentityManager(shared_arcface=shared_arcface,
                                         fast_arcface=fast_arcface,
-                                        precise_arcface=precise_arcface)
+                                        precise_arcface=precise_arcface,
+                                        shared_landmarker=shared_landmarker)
         self.zone     = ZoneManager()
         self.speed    = SpeedFilter()
         self.kalman   = KalmanPredictor()

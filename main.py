@@ -1811,13 +1811,14 @@ def _analyze_video_sync(file_bytes: bytes, filename: str,
                 continue
 
         # ── TrackingManager NEUF à chaque appel HTTP ──────────────
+        face_analyzer_local = FaceAnalyzer()
         tracking_manager = TrackingManager(
             max_age=300, n_init=3,
             shared_arcface=shared_arcface,
             fast_arcface=fast_arcface,
-            precise_arcface=precise_arcface
+            precise_arcface=precise_arcface,
+            shared_landmarker=getattr(face_analyzer_local, '_face_lm', None)
         )
-        face_analyzer_local = FaceAnalyzer()
 
         frames_candidate_analyzed = 0
         frames_other_person       = 0
@@ -3115,7 +3116,9 @@ async def ws_analyze_realtime(websocket: WebSocket):
 
     tm                 = TrackingManager(shared_arcface=shared_arcface,
                                          fast_arcface=fast_arcface,
-                                         precise_arcface=precise_arcface)
+                                         precise_arcface=precise_arcface,
+                                         shared_landmarker=getattr(
+                                             face_analyzer_global, '_face_lm', None))
     print(f"[WS] ⏱️ TrackingManager initialisé: "
           f"{_time_module.time()-_t_session_start:.2f}s après acceptation")
     face_analyzer_global.reset()
@@ -3491,7 +3494,9 @@ async def ws_analyze_realtime(websocket: WebSocket):
                 print("[WS] 🔄 Reset demandé — réinitialisation complète du tracking")
                 tm = TrackingManager(shared_arcface=shared_arcface,
                                      fast_arcface=fast_arcface,
-                                     precise_arcface=precise_arcface)
+                                     precise_arcface=precise_arcface,
+                                     shared_landmarker=getattr(
+                                         face_analyzer_global, '_face_lm', None))
                 face_analyzer_global.reset()
                 emotion_ws_history.clear()
                 _frame_counter      = 0
@@ -4333,7 +4338,26 @@ async def ws_analyze_realtime(websocket: WebSocket):
                     _precise_ok, _precise_sim = await _run_sync(
                         loop, executor, tm.identity.verify_precise,
                         face_img_padded, 0.55)
-                    if not _precise_ok:
+                    # ← AJOUT : second signal indépendant — signature
+                    # géométrique du visage (proportions faciales via
+                    # MediaPipe), complètement différente des
+                    # embeddings profonds d'ArcFace. Si les deux se
+                    # trompent de la MÊME façon sur une paire de
+                    # visages proches (comme observé pour buffalo_sc
+                    # ET son repli), un signal basé sur une approche
+                    # fondamentalement différente a de meilleures
+                    # chances de les distinguer. Retourne (True, 0.0)
+                    # si indisponible (référence absente, détection
+                    # échouée) — n'ajoute alors aucune contrainte
+                    # supplémentaire.
+                    _geo_ok, _geo_ecart = await _run_sync(
+                        loop, executor, tm.identity.verify_geometric,
+                        face_img_padded)
+                    if not _geo_ok:
+                        print(f"[WS] 📐 Signature géométrique en "
+                              f"désaccord (écart={_geo_ecart:.3f}) — "
+                              f"rejeté malgré le modèle rapide validé")
+                    if not _precise_ok or not _geo_ok:
                         print(f"[WS] 🚨 Modèle précis en désaccord "
                               f"(frame {_consecutive_successes+1}/2, "
                               f"sim_precise={_precise_sim:.3f}) — "
