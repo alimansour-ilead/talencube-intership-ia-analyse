@@ -813,23 +813,44 @@ def calibrate_single_frame(probs):
 
 def predict_emotion_enhanced(face, reset_session=False):
     try:
+        # ← AJOUT : chronométrage fin par sous-étape — objectif :
+        # savoir si le temps observé en production (1200-1900ms,
+        # bien plus que les 275ms du benchmark à la construction)
+        # vient du prétraitement (conversion couleur, tokenisation)
+        # ou de l'inférence ONNX/PyTorch elle-même.
+        _t0 = _time_module.time()
         face_rgb = cv2.cvtColor(preprocess_face(face), cv2.COLOR_BGR2RGB)
+        _t1 = _time_module.time()
         inputs   = base_processor(images=face_rgb, return_tensors="pt").to(device)
+        _t2 = _time_module.time()
         if USE_ONNX:
             pv_np     = inputs['pixel_values'].cpu().numpy()
+            _t3 = _time_module.time()
             logits, _ = vit_session.run(None, {"pixel_values": pv_np})
+            _t4 = _time_module.time()
             probs     = F.softmax(torch.tensor(logits), dim=-1).numpy()[0]
         else:
+            _t3 = _time_module.time()
             with torch.no_grad():
                 probs = F.softmax(
                     model(inputs['pixel_values']), dim=-1
                 ).cpu().numpy()[0]
+            _t4 = _time_module.time()
 
         probs = correct_emotion_probs(face, probs)
 
         emotion, conf, cal = calibrate_single_frame(probs)
         top3_idx = np.argsort(cal)[-3:][::-1]
         top3     = [(EMOTION_LABELS[i], float(cal[i])) for i in top3_idx]
+        _t5 = _time_module.time()
+        _total_ms = (_t5 - _t0) * 1000
+        if _total_ms > 300:
+            print(f"[TIMING-FIN] prétraitement={(_t1-_t0)*1000:.0f}ms "
+                  f"tokenisation={(_t2-_t1)*1000:.0f}ms "
+                  f"conv_numpy={(_t3-_t2)*1000:.0f}ms "
+                  f"inférence_pure={(_t4-_t3)*1000:.0f}ms "
+                  f"post_traitement={(_t5-_t4)*1000:.0f}ms "
+                  f"TOTAL={_total_ms:.0f}ms")
         return emotion, conf, top3, probs   # ← AJOUT : probs en 4e retour
     except Exception as e:
         print(f"Erreur prédiction: {e}")
