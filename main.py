@@ -301,8 +301,51 @@ except Exception as e:
     print(f"[HuBERT] ❌ Échec chargement: {e} — analyse audio désactivée")
 
 MODEL_STATUS["au_pyfeat"] = load_au_detector()
+
 # ── ONNX Runtime ─────────────────────────────────────────────────
 import onnxruntime as ort
+
+# ← AJOUT : génère models/vit_emotion.onnx au DÉMARRAGE DU SERVEUR
+# s'il n'existe pas déjà, au lieu de tenter ça pendant la
+# CONSTRUCTION Docker (confirmé en échec systématique — réseau
+# restreint vers HuggingFace pendant le build sur Railway). Le
+# réseau à l'EXÉCUTION est souvent moins restreint que pendant la
+# construction — cette tentative a donc de meilleures chances de
+# réussir ici. Coût : un délai de démarrage supplémentaire UNE SEULE
+# FOIS par démarrage de réplique (le temps de télécharger le modèle
+# de base + convertir), mais ensuite CHAQUE frame de CHAQUE session
+# bénéficie du chemin ONNX rapide pour toute la durée de vie de cette
+# réplique — gain net massif si ça réussit. Si ça échoue (timeout,
+# réseau toujours bloqué même à l'exécution), le système continue
+# normalement avec le repli PyTorch existant, sans bloquer le
+# démarrage du serveur indéfiniment (timeout de sécurité).
+if not os.path.exists("models/vit_emotion.onnx"):
+    print("[ONNX] models/vit_emotion.onnx absent — tentative de "
+          "génération automatique au démarrage (peut prendre "
+          "1-2 minutes)...")
+    try:
+        import subprocess as _subprocess_onnx
+        _export_result = _subprocess_onnx.run(
+            ["python", "export_onnx.py"],
+            input="y\ny\ny\n",  # répond automatiquement aux invites
+                                 # interactives du script (voir son
+                                 # code : jusqu'à 3 invites possibles)
+            capture_output=True, text=True, timeout=180
+        )
+        if os.path.exists("models/vit_emotion.onnx"):
+            print("[ONNX] ✅ Génération automatique réussie au "
+                  "démarrage")
+        else:
+            print(f"[ONNX] ⚠️ Génération automatique échouée — "
+                  f"stdout={_export_result.stdout[-500:]} "
+                  f"stderr={_export_result.stderr[-500:]}")
+    except _subprocess_onnx.TimeoutExpired:
+        print("[ONNX] ⚠️ Génération automatique interrompue "
+              "(timeout 180s dépassé — réseau probablement toujours "
+              "restreint même à l'exécution) — repli PyTorch")
+    except Exception as _e_export:
+        print(f"[ONNX] ⚠️ Génération automatique échouée "
+              f"({_e_export}) — repli PyTorch")
 
 print("Chargement ONNX Runtime...")
 try:
