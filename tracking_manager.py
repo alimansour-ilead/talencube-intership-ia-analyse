@@ -672,6 +672,16 @@ class IdentityManager:
                     continue
                 emb  = best.embedding.astype(np.float32)
                 norm = np.linalg.norm(emb)
+                # ← AJOUT : diagnostic détaillé — confirmé en
+                # production qu'une frame peut réussir (sim élevée)
+                # puis la suivante échouer catastrophiquement (sim
+                # quasi aléatoire) sur la MÊME personne, sous des
+                # conditions de luminosité/netteté similaires. Ce log
+                # permet de voir si la STRATÉGIE utilisée (taille de
+                # crop) ou les DIMENSIONS d'entrée diffèrent entre une
+                # frame réussie et une frame qui échoue.
+                print(f"[ArcFace-DIAG] fast strat={name} "
+                      f"input_shape={img.shape} det_score={best.det_score:.3f}")
                 return emb/norm if norm > 0 else emb
             except Exception:
                 continue
@@ -688,9 +698,13 @@ class IdentityManager:
                 emb  = best.embedding.astype(np.float32)
                 norm = np.linalg.norm(emb)
                 self._last_embed_low_conf = True
+                print(f"[ArcFace-DIAG] fast SECOURS strat={name} "
+                      f"input_shape={img.shape} det_score={best.det_score:.3f}")
                 return emb/norm if norm > 0 else emb
             except Exception:
                 continue
+        print(f"[ArcFace-DIAG] fast ÉCHEC TOTAL — aucun visage détecté "
+              f"input_shape={img.shape}")
         return None
 
     @staticmethod
