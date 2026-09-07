@@ -80,4 +80,27 @@ RUN mkdir -p /root/.insightface/models && \
 
 COPY . .
 
+# ← AJOUT : génère models/vit_emotion.onnx à la construction de
+# l'image — confirmé en production (chronométrage précis) que son
+# absence forçait un repli sur PyTorch brut, prenant 2.6 à 5 SECONDES
+# par frame pour la seule inférence d'émotion (contre quelques
+# dizaines de ms attendues avec un modèle ONNX correctement exporté).
+# C'est de loin le plus gros facteur du ralentissement perçu sur tout
+# le flux temps réel (ArcFace ne prend que 10-170ms en comparaison).
+#
+# Dépend de models/emotion_model.pth (déjà présent dans le dépôt,
+# utilisé par le repli PyTorch actuel) et télécharge le modèle de
+# base depuis HuggingFace (dima806/facial_emotions_image_detection) —
+# nécessite un accès réseau pendant la construction. Si cette étape
+# échoue (réseau restreint, dépendance manquante), le build continue
+# quand même (|| true) : le système repli sur PyTorch comme avant,
+# juste sans le gain de vitesse.
+# ⚠️ Le script contient une invite interactive non conditionnelle
+# ("Appliquer INT8 ?") qui bloquerait indéfiniment dans ce contexte
+# non-interactif — "yes" répond automatiquement "oui" à cette
+# invite (et à toute autre invite similaire), acceptant la
+# quantification INT8 (recommandée par le script lui-même : "+30%
+# vitesse").
+RUN yes | python export_onnx.py || echo "⚠️ Export ONNX échoué — le système continuera avec le repli PyTorch existant (plus lent)"
+
 CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
