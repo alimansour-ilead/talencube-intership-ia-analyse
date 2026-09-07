@@ -1601,7 +1601,22 @@ def _extract_candidates_preview_sync(file_bytes: bytes, filename: str):
                                    max(ci['count'], cj['count']))
                     spatial_ok  = (spatial_dist < SPATIAL_MERGE_PX and
                                    count_ratio < 0.15)
-                    should_merge = sim_ok or spatial_ok
+                    # ← FIX CRITIQUE : confirmé en production, "Candidat
+                    # 1" pouvait devenir une MOYENNE de deux visages
+                    # complètement différents. Cause : should_merge
+                    # acceptait spatial_ok SEUL (même position à l'écran
+                    # + l'un des deux avec beaucoup moins de frames),
+                    # sans exiger la moindre ressemblance faciale — deux
+                    # personnes DIFFÉRENTES partageant la même position
+                    # (exactement notre scénario de test) étaient
+                    # fusionnées en un seul profil dès que l'une
+                    # apparaissait bien moins souvent que l'autre.
+                    # Exige maintenant qu'une similarité MINIMALE existe
+                    # aussi dans le cas du repli spatial (0.15 — bien
+                    # sous MERGE_TOLERANCE, juste assez pour exclure
+                    # deux visages franchement différents comme sim
+                    # quasi nulle ou négative).
+                    should_merge = sim_ok or (spatial_ok and sim > 0.15)
 
                     if should_merge:
                         reason = []
