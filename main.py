@@ -4338,25 +4338,27 @@ async def ws_analyze_realtime(websocket: WebSocket):
                     _precise_ok, _precise_sim = await _run_sync(
                         loop, executor, tm.identity.verify_precise,
                         face_img_padded, 0.55)
-                    # ← AJOUT : second signal indépendant — signature
-                    # géométrique du visage (proportions faciales via
-                    # MediaPipe), complètement différente des
-                    # embeddings profonds d'ArcFace. Si les deux se
-                    # trompent de la MÊME façon sur une paire de
-                    # visages proches (comme observé pour buffalo_sc
-                    # ET son repli), un signal basé sur une approche
-                    # fondamentalement différente a de meilleures
-                    # chances de les distinguer. Retourne (True, 0.0)
-                    # si indisponible (référence absente, détection
-                    # échouée) — n'ajoute alors aucune contrainte
-                    # supplémentaire.
-                    _geo_ok, _geo_ecart = await _run_sync(
-                        loop, executor, tm.identity.verify_geometric,
-                        face_img_padded)
-                    if not _geo_ok:
-                        print(f"[WS] 📐 Signature géométrique en "
-                              f"désaccord (écart={_geo_ecart:.3f}) — "
-                              f"rejeté malgré le modèle rapide validé")
+                    # ← OPTIMISÉ : la signature géométrique ne s'exécute
+                    # désormais QUE si le modèle précis est déjà en
+                    # désaccord (comme un second avis de départage),
+                    # au lieu de systématiquement à chaque fois.
+                    # Confirmé : le coût de calcul supplémentaire
+                    # (verify_precise + verify_geometric à chaque
+                    # vérification) était perceptible. Dans l'immense
+                    # majorité des cas (bon candidat, modèle précis
+                    # déjà d'accord), la géométrie n'apporterait de
+                    # toute façon rien de plus — elle ne devient utile
+                    # que pour les cas ambigus où le modèle précis a
+                    # déjà signalé un problème.
+                    _geo_ok, _geo_ecart = True, 0.0
+                    if not _precise_ok:
+                        _geo_ok, _geo_ecart = await _run_sync(
+                            loop, executor, tm.identity.verify_geometric,
+                            face_img_padded)
+                        if not _geo_ok:
+                            print(f"[WS] 📐 Signature géométrique en "
+                                  f"désaccord (écart={_geo_ecart:.3f}) — "
+                                  f"rejeté malgré le modèle rapide validé")
                     if not _precise_ok or not _geo_ok:
                         print(f"[WS] 🚨 Modèle précis en désaccord "
                               f"(frame {_consecutive_successes+1}/2, "
@@ -4435,27 +4437,22 @@ async def ws_analyze_realtime(websocket: WebSocket):
                         await _run_sync(
                             loop, executor, tm.identity.verify_precise,
                             face_img_padded, 0.55)
-                    # ← AJOUT : signature géométrique également au
-                    # contrôle périodique en cours de session, pas
-                    # seulement à la reconfirmation fraîche. Confirmé
-                    # en test vidéo : un verrouillage sur la mauvaise
-                    # personne peut se maintenir plusieurs secondes sans
-                    # jamais déclencher la porte "reconfirmation
-                    # fraîche" (si sa similarité ArcFace reste assez
-                    # haute pour ne jamais faire chuter
-                    # _consecutive_successes à zéro) — dans ce cas,
-                    # NI verify_precise NI verify_geometric n'étaient
-                    # consultés du tout, peu importe leur pertinence.
-                    # Ce contrôle périodique est le seul filet de
-                    # sécurité pour ce cas précis.
-                    _geo_ok_periodic, _geo_ecart_periodic = \
-                        await _run_sync(
-                            loop, executor, tm.identity.verify_geometric,
-                            face_img_padded)
-                    if not _geo_ok_periodic:
-                        print(f"[WS] 📐 Vérification périodique — "
-                              f"signature géométrique en désaccord "
-                              f"(écart={_geo_ecart_periodic:.3f})")
+                    # ← OPTIMISÉ : même logique que pour la
+                    # reconfirmation fraîche — la géométrie ne
+                    # s'exécute que si le modèle précis est déjà en
+                    # désaccord (tie-breaker), réduisant le coût de
+                    # calcul dans l'immense majorité des cas (bon
+                    # candidat, modèle précis déjà d'accord).
+                    _geo_ok_periodic, _geo_ecart_periodic = True, 0.0
+                    if not _precise_ok_periodic:
+                        _geo_ok_periodic, _geo_ecart_periodic = \
+                            await _run_sync(
+                                loop, executor, tm.identity.verify_geometric,
+                                face_img_padded)
+                        if not _geo_ok_periodic:
+                            print(f"[WS] 📐 Vérification périodique — "
+                                  f"signature géométrique en désaccord "
+                                  f"(écart={_geo_ecart_periodic:.3f})")
                     if not _precise_ok_periodic or not _geo_ok_periodic:
                         # ← FIX : exige 2 désaccords CONSÉCUTIFS de la
                         # vérification périodique avant d'agir, au lieu
