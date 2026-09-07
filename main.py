@@ -3556,6 +3556,12 @@ async def ws_analyze_realtime(websocket: WebSocket):
                                            "error": "Pas de frame"})
                 continue
 
+            # ← AJOUT : chronométrage du temps TOTAL de traitement
+            # d'une frame, du décodage jusqu'à l'envoi de la réponse —
+            # la mesure la plus utile pour la vue d'ensemble, à mettre
+            # en regard des chronométrages détaillés par étape ajoutés
+            # plus bas (ArcFace, ViT, MediaPipe).
+            _t_frame_total_start = _time_module.time()
             img = await loop.run_in_executor(executor, _decode_frame, frame_b64)
             if img is None:
                 await websocket.send_json({"success": False,
@@ -4161,8 +4167,10 @@ async def ws_analyze_realtime(websocket: WebSocket):
 
             # ← RUN_IN_EXECUTOR (chemin principal) : comparaison
             # d'histogramme HSV, appelée à chaque frame.
+            _t_hist_start = _time_module.time()
             spd_ok, spd_corr = await _run_sync(
                 loop, executor, tm.speed.is_candidate, face_img)
+            _t_hist_ms = (_time_module.time() - _t_hist_start) * 1000
             if not spd_ok:
                 print(f"[WS] ⚡ Rejet hist corr={spd_corr:.2f}")
                 tm.set_id_rejected(True); _cache_key=None; _cache_sim=None
@@ -4188,6 +4196,14 @@ async def ws_analyze_realtime(websocket: WebSocket):
             # ← RUN_IN_EXECUTOR (chemin principal) : vérification
             # ArcFace, appelée à CHAQUE frame — c'est l'appel le plus
             # fréquent de toute la fonction.
+            # ← AJOUT : chronométrage précis — objectif : savoir
+            # exactement combien de temps chaque étape du pipeline
+            # prend par frame (YOLO/tracking déjà fait plus haut,
+            # ArcFace ici, émotion plus bas), pour identifier où couper
+            # en priorité. Confirmé : le rythme réel des frames dépend
+            # directement du temps de traitement serveur (le client
+            # attend la réponse avant d'envoyer la frame suivante).
+            _t_arcface_start = _time_module.time()
             if tm.identity.use_arcface:
                 is_candidate, similarity = await _run_sync(
                     loop, executor, tm.identity.verify,
@@ -4205,6 +4221,10 @@ async def ws_analyze_realtime(websocket: WebSocket):
                     strict_global=use_strict,
                     threshold=(None if use_strict
                                else dynamic_threshold_ws))
+            _t_arcface_ms = (_time_module.time() - _t_arcface_start) * 1000
+            if _frame_counter % 10 == 0 or _t_arcface_ms > 500:
+                print(f"[TIMING] ArcFace principal: {_t_arcface_ms:.0f}ms "
+                      f"(frame {_frame_counter})")
             if use_strict:
                 print(f"[WS] 🔒 Vérif. stricte sim={similarity:.3f} "
                       f"seuil={CFG.TOLERANCE_REID_GLOBAL} "
@@ -4878,8 +4898,13 @@ async def ws_analyze_realtime(websocket: WebSocket):
             # d'émotion, appelée à chaque frame validée — c'est
             # l'appel le plus coûteux après ArcFace (modèle de deep
             # learning complet).
+            _t_vit_start = _time_module.time()
             emotion, confidence, _, v_probs = await _run_sync(
                 loop, executor, predict_emotion_enhanced, face_img)
+            _t_vit_ms = (_time_module.time() - _t_vit_start) * 1000
+            if _frame_counter % 10 == 0 or _t_vit_ms > 500:
+                print(f"[TIMING] ViT émotion: {_t_vit_ms:.0f}ms "
+                      f"(frame {_frame_counter})")
 
             if confidence < 0.40:
                 # ← FIX : applique le même correctif de stabilité que
@@ -4956,8 +4981,13 @@ async def ws_analyze_realtime(websocket: WebSocket):
             # système (moins de risque de saturation CPU déjà mesuré
             # en production).
             if _frame_counter % 2 == 0:
+                _t_mp_start = _time_module.time()
                 face_analysis_result = await _run_sync(
                     loop, executor, face_analyzer.analyze, img)
+                _t_mp_ms = (_time_module.time() - _t_mp_start) * 1000
+                if _frame_counter % 10 == 0 or _t_mp_ms > 500:
+                    print(f"[TIMING] MediaPipe (FaceLandmarker+Pose): "
+                          f"{_t_mp_ms:.0f}ms (frame {_frame_counter})")
                 face_boost = face_analyzer.get_boost_params(face_analysis_result)
                 _last_face_analysis_result = face_analysis_result
                 _last_face_boost = face_boost
@@ -5020,6 +5050,13 @@ async def ws_analyze_realtime(websocket: WebSocket):
             _last_confidence = float(confidence)
             _last_metrics    = metrics
             _frames_analyzed += 1
+
+            _t_frame_total_ms = (
+                _time_module.time() - _t_frame_total_start) * 1000
+            if _frame_counter % 10 == 0 or _t_frame_total_ms > 1500:
+                print(f"[TIMING] 🏁 TOTAL frame: {_t_frame_total_ms:.0f}ms "
+                      f"(frame {_frame_counter}) — hist={_t_hist_ms:.0f}ms "
+                      f"arcface={_t_arcface_ms:.0f}ms vit={_t_vit_ms:.0f}ms")
 
             await websocket.send_json(convert_to_serializable(result))
             if (audio_b64 and (not active_audio_task or
