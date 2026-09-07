@@ -349,16 +349,35 @@ if not os.path.exists("models/vit_emotion.onnx"):
 
 print("Chargement ONNX Runtime...")
 try:
+    # ← FIX : configuration explicite du nombre de threads — évite
+    # la sur-souscription. Confirmé en production : ONNX Runtime
+    # actif ("Activé — vitesse x6") mais toujours lent (1200-1900ms
+    # par frame, contre 275ms au benchmark de construction). Cause
+    # probable : sans configuration explicite, ONNX Runtime utilise
+    # son comportement par défaut (tenter d'utiliser TOUS les cœurs
+    # détectés) — mais dans un conteneur Railway avec une allocation
+    # CPU limitée, cette détection se base souvent sur les cœurs de
+    # la MACHINE HÔTE entière, pas la vraie limite du conteneur,
+    # créant bien plus de threads que réellement disponibles
+    # (sur-souscription, changements de contexte excessifs, plus
+    # lent qu'une configuration limitée et cohérente).
+    _onnx_opts = ort.SessionOptions()
+    _onnx_opts.intra_op_num_threads = 2
+    _onnx_opts.inter_op_num_threads = 1
+    _onnx_opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+
     vit_session    = ort.InferenceSession(
         "models/vit_emotion.onnx",
+        sess_options=_onnx_opts,
         providers=['CPUExecutionProvider']
     )
     hubert_session = ort.InferenceSession(
         "models/hubert_audio.onnx",
+        sess_options=_onnx_opts,
         providers=['CPUExecutionProvider']
     )
     USE_ONNX = True
-    print("[ONNX] Activé — vitesse x6")
+    print("[ONNX] Activé — vitesse x6 (threads limités: intra=2, inter=1)")
 except Exception as e:
     vit_session = hubert_session = None
     USE_ONNX    = False
@@ -845,7 +864,13 @@ def predict_emotion_enhanced(face, reset_session=False):
         _t5 = _time_module.time()
         _total_ms = (_t5 - _t0) * 1000
         if _total_ms > 300:
-            print(f"[TIMING-FIN] prétraitement={(_t1-_t0)*1000:.0f}ms "
+            # ← AJOUT : statut USE_ONNX directement dans CHAQUE ligne
+            # de chronométrage — élimine le besoin de chercher
+            # séparément le log de démarrage (pas toujours disponible
+            # dans un extrait de log) pour savoir si ONNX était actif
+            # au moment précis de CE test.
+            print(f"[TIMING-FIN] USE_ONNX={USE_ONNX} "
+                  f"prétraitement={(_t1-_t0)*1000:.0f}ms "
                   f"tokenisation={(_t2-_t1)*1000:.0f}ms "
                   f"conv_numpy={(_t3-_t2)*1000:.0f}ms "
                   f"inférence_pure={(_t4-_t3)*1000:.0f}ms "
@@ -4983,7 +5008,7 @@ async def ws_analyze_realtime(websocket: WebSocket):
             _t_vit_ms = (_time_module.time() - _t_vit_start) * 1000
             if _frame_counter % 10 == 0 or _t_vit_ms > 500:
                 print(f"[TIMING] ViT émotion: {_t_vit_ms:.0f}ms "
-                      f"(frame {_frame_counter})")
+                      f"USE_ONNX={USE_ONNX} (frame {_frame_counter})")
 
             if confidence < 0.40:
                 # ← FIX : applique le même correctif de stabilité que
