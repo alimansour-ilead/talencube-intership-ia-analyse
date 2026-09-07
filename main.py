@@ -337,8 +337,8 @@ if not os.path.exists("models/vit_emotion.onnx"):
                   "démarrage")
         else:
             print(f"[ONNX] ⚠️ Génération automatique échouée — "
-                  f"stdout={_export_result.stdout[-500:]} "
-                  f"stderr={_export_result.stderr[-500:]}")
+                  f"stdout COMPLET:\n{_export_result.stdout}\n"
+                  f"--- stderr COMPLET ---\n{_export_result.stderr}")
     except _subprocess_onnx.TimeoutExpired:
         print("[ONNX] ⚠️ Génération automatique interrompue "
               "(timeout 180s dépassé — réseau probablement toujours "
