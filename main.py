@@ -4435,7 +4435,28 @@ async def ws_analyze_realtime(websocket: WebSocket):
                         await _run_sync(
                             loop, executor, tm.identity.verify_precise,
                             face_img_padded, 0.55)
-                    if not _precise_ok_periodic:
+                    # ← AJOUT : signature géométrique également au
+                    # contrôle périodique en cours de session, pas
+                    # seulement à la reconfirmation fraîche. Confirmé
+                    # en test vidéo : un verrouillage sur la mauvaise
+                    # personne peut se maintenir plusieurs secondes sans
+                    # jamais déclencher la porte "reconfirmation
+                    # fraîche" (si sa similarité ArcFace reste assez
+                    # haute pour ne jamais faire chuter
+                    # _consecutive_successes à zéro) — dans ce cas,
+                    # NI verify_precise NI verify_geometric n'étaient
+                    # consultés du tout, peu importe leur pertinence.
+                    # Ce contrôle périodique est le seul filet de
+                    # sécurité pour ce cas précis.
+                    _geo_ok_periodic, _geo_ecart_periodic = \
+                        await _run_sync(
+                            loop, executor, tm.identity.verify_geometric,
+                            face_img_padded)
+                    if not _geo_ok_periodic:
+                        print(f"[WS] 📐 Vérification périodique — "
+                              f"signature géométrique en désaccord "
+                              f"(écart={_geo_ecart_periodic:.3f})")
+                    if not _precise_ok_periodic or not _geo_ok_periodic:
                         # ← FIX : exige 2 désaccords CONSÉCUTIFS de la
                         # vérification périodique avant d'agir, au lieu
                         # d'un seul. Confirmé en test vidéo : le bon
