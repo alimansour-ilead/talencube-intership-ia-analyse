@@ -2445,19 +2445,26 @@ def _analyze_video_sync(file_bytes: bytes, filename: str,
                     _force_strict_video = True
 
             if memo_done:
+                # ← FIX CRITIQUE : ne bloque plus la frame sur ce seul
+                # signal — confirmé en production (vidéo de 52+
+                # minutes) qu'une dérive naturelle d'éclairage après
+                # 44 minutes suffisait à faire chuter la corrélation
+                # d'histogramme à quasi zéro EN PERMANENCE pour tout le
+                # reste de la vidéo, bloquant chaque frame AVANT même
+                # qu'ArcFace (bien plus robuste, avec ancre anti-dérive
+                # et seuils adaptatifs) n'ait la moindre chance de
+                # vérifier indépendamment. La référence de cet
+                # histogramme est fixée UNE SEULE FOIS au début et
+                # n'est jamais rafraîchie — un simple pré-filtre de
+                # vitesse ne devrait jamais avoir le dernier mot sur
+                # l'identité à lui seul. Le signal reste journalisé à
+                # titre diagnostique, mais ArcFace est maintenant
+                # systématiquement consulté ensuite.
                 spd_ok, spd_corr = tracking_manager.speed.is_candidate(face_img)
                 if not spd_ok:
-                    frames_other_person += 1
-                    frames_results.append({
-                        'timestamp':     float(t),
-                        'tracking_lost': True,
-                        'skip_reason':   'autre_personne_hist',
-                        'emotion':       'inconnu',
-                        'confidence':    0.0
-                    })
                     print(f"[analyze_video] t={t:.1f}s — "
-                          f"rejet hist corr={spd_corr:.2f}")
-                    continue
+                          f"⚠️ hist corr={spd_corr:.2f} bas, mais "
+                          f"ArcFace consulté quand même (pas de saut)")
 
             if memo_done:
                 blur_val = float(cv2.Laplacian(gray_c, cv2.CV_64F).var())
