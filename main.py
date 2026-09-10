@@ -1506,7 +1506,14 @@ def _extract_candidates_preview_sync(file_bytes: bytes, filename: str):
         # analyser (YOLO + ArcFace) des minutes entières de vidéo juste
         # pour extraire un aperçu du visage. Réduit fortement le temps
         # de traitement et la charge CPU sur ce endpoint.
-        SCAN_DURATION_CAP = 30.0
+        # ← FIX : aligné sur la durée déjà conservée par la réparation
+        # FFmpeg (voir plus haut, "-t 35") — auparavant 30s, laissant
+        # 5 secondes de contenu déjà présentes dans le fichier réparé
+        # mais jamais réellement scannées par Python. Un second
+        # candidat qui n'apparaît clairement qu'après 30s (mais avant
+        # 35s) pouvait ainsi accumuler trop peu de frames valides pour
+        # former un cluster retenu.
+        SCAN_DURATION_CAP = 35.0
         scan_dur = min(total_dur, SCAN_DURATION_CAP)
 
         # ← FIX : intervalle doublé (0.5s → 1.0s) — confirmé en
@@ -1567,10 +1574,21 @@ def _extract_candidates_preview_sync(file_bytes: bytes, filename: str):
                 cx = (x1 + x2) / 2.0
                 cy = (y1 + y2) / 2.0
 
-                if cy < H_vid * 0.28:
-                    print(f"[Preview] Visage ignoré — miniature bord haut "
-                          f"({cx:.0f},{cy:.0f})")
-                    continue
+                # ← RETIRÉ : filtre "cy < H_vid * 0.28" (rejet par
+                # position verticale seule). Confirmé en production :
+                # rejetait à tort un second candidat LÉGITIME dont la
+                # vidéo apparaissait simplement en haut de l'écran
+                # (mise en page Zoom à deux intervenants) — 15 frames
+                # de ce candidat rejetées ("Visage ignoré — miniature
+                # bord haut"), résultat : 2 clusters bruts détectés
+                # mais 1 seul retenu, alors que les deux candidats
+                # étaient réellement présents. Ce filtre ne vérifiait
+                # QUE la position, jamais la taille — un visage grand
+                # et net en haut de l'image était rejeté comme une
+                # vignette, alors qu'une vraie petite vignette de
+                # webcam personnelle est déjà éliminée par le filtre
+                # de taille (MIN_FACE_PX) juste au-dessus, qui reste
+                # en place.
 
                 matched_idx = None
                 best_sim    = 0.0
