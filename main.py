@@ -330,7 +330,16 @@ if not os.path.exists("models/vit_emotion.onnx"):
             input="y\ny\ny\n",  # répond automatiquement aux invites
                                  # interactives du script (voir son
                                  # code : jusqu'à 3 invites possibles)
-            capture_output=True, text=True, timeout=180
+            capture_output=True, text=True, timeout=180,
+            # ← FIX : encodage explicite à la LECTURE de la sortie du
+            # sous-processus — confirmé en test local sur Windows :
+            # sans ceci, Python utilise l'encodage par défaut de la
+            # locale (cp1252 sur Windows) pour décoder cette sortie,
+            # qui échoue puisque export_onnx.py produit désormais du
+            # UTF-8 (corrigé précédemment côté écriture). errors=
+            # 'replace' évite un nouveau plantage même si un octet
+            # imprévu apparaissait malgré tout.
+            encoding='utf-8', errors='replace'
         )
         if os.path.exists("models/vit_emotion.onnx"):
             print("[ONNX] ✅ Génération automatique réussie au "
@@ -697,7 +706,18 @@ def detect_faces(frame):
     img_h, img_w = frame.shape[:2]
     is_face_model = IS_FACE_MODEL
 
-    results = yolo_model(frame, imgsz=320, conf=0.22, verbose=False)
+    # ← FIX : max_det borne le nombre de candidats que le filtrage
+    # NMS doit traiter — confirmé en test local ("WARNING NMS time
+    # limit 2.050s exceeded") qu'une scène avec beaucoup de
+    # détections à faible confiance pouvait dépasser le délai de
+    # sécurité interne, entraînant une absence TOTALE de détection
+    # sur la frame concernée ("Aucun visage distinct détecté"). Une
+    # analyse de visage n'a jamais besoin de plus de quelques
+    # dizaines de candidats par frame — 20 est largement suffisant
+    # ici (1-2 personnes attendues à l'écran), tout en bornant le
+    # pire cas.
+    results = yolo_model(frame, imgsz=320, conf=0.22, max_det=20,
+                          verbose=False)
     for r in results:
         for box in r.boxes:
             cls  = int(box.cls[0])

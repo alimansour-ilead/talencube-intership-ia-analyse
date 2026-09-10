@@ -14,6 +14,21 @@
 
 import os
 import sys
+
+# ← FIX : force l'encodage UTF-8 pour stdout/stderr — confirmé en
+# test local sur Windows (UnicodeEncodeError: 'charmap' codec can't
+# encode characters). La console Windows utilise par défaut
+# l'encodage cp1252, incapable de représenter les caractères Unicode
+# de dessin de boîte (═, U+2550) utilisés dans les messages de ce
+# script. Fonctionnait sur Railway/Linux (UTF-8 par défaut), mais
+# plantait uniquement en test local sur Windows. reconfigure() est
+# disponible depuis Python 3.7+, sans risque sur les environnements
+# où l'encodage est déjà correct (Linux/Mac).
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8')
+
 import time
 import torch
 import torch.nn as nn
